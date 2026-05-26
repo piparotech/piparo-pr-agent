@@ -15,6 +15,7 @@ RUN_USAGE_END = "<!-- pr-agent-ai-usage:end -->"
 TOTAL_USAGE_HEADER = "## PR-Agent Usage 📊"
 TOTAL_USAGE_DATA_START = "<!-- pr-agent-ai-usage-total:data"
 TOTAL_USAGE_DATA_END = "-->"
+TOTAL_USAGE_MAX_RUNS = 25
 
 
 @dataclass
@@ -107,10 +108,13 @@ def publish_ai_usage_total_comment(git_provider: Any, ai_handler: Any, command: 
             existing_body = body
             break
 
-    data = _load_total_usage_data(existing_body)
+    data = _normalize_total_usage_data(_load_total_usage_data(existing_body))
     run_ids = {run.get("run_id") for run in data.get("runs", [])}
     if run_id not in run_ids:
-        data.setdefault("runs", []).append(_build_run_entry(git_provider, ai_handler, command, calls))
+        run_entry = _build_run_entry(git_provider, ai_handler, command, calls)
+        data.setdefault("runs", []).append(run_entry)
+        _increment_total_usage_summary(data, run_entry)
+    data = _compact_total_usage_data(data, _get_total_usage_max_runs())
 
     body = _render_total_usage(data)
     try:
@@ -277,6 +281,38 @@ def _load_total_usage_data(body: str) -> dict:
     return data
 
 
+def _normalize_total_usage_data(data: dict) -> dict:
+    runs = data.setdefault("runs", [])
+    summary = data.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+        data["summary"] = summary
+    tokens_from_runs = sum(int(run.get("tokens", 0) or 0) for run in runs)
+    summary["run_count"] = max(int(summary.get("run_count", 0) or 0), len(runs))
+    summary["tokens"] = max(int(summary.get("tokens", 0) or 0), tokens_from_runs)
+    return data
+
+
+def _increment_total_usage_summary(data: dict, run_entry: dict) -> None:
+    summary = data.setdefault("summary", {})
+    summary["run_count"] = int(summary.get("run_count", 0) or 0) + 1
+    summary["tokens"] = int(summary.get("tokens", 0) or 0) + int(run_entry.get("tokens", 0) or 0)
+
+
+def _compact_total_usage_data(data: dict, max_runs: int) -> dict:
+    runs = data.get("runs", [])
+    data["runs"] = runs[-max_runs:] if max_runs > 0 else []
+    return data
+
+
+def _get_total_usage_max_runs() -> int:
+    try:
+        max_runs = int(get_settings().config.get("ai_usage_total_max_runs", TOTAL_USAGE_MAX_RUNS))
+    except Exception:
+        max_runs = TOTAL_USAGE_MAX_RUNS
+    return max(0, max_runs)
+
+
 def _build_run_entry(git_provider: Any, ai_handler: Any, command: str, calls: list[AiCallUsage]) -> dict:
     commit = ""
     try:
@@ -310,7 +346,12 @@ def _unique_models(calls: list[AiCallUsage]) -> list[str]:
 
 def _render_total_usage(data: dict) -> str:
     runs = data.get("runs", [])
-    total_tokens = sum(int(run.get("tokens", 0) or 0) for run in runs)
+    summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
+    total_tokens = max(
+        int(summary.get("tokens", 0) or 0),
+        sum(int(run.get("tokens", 0) or 0) for run in runs),
+    )
+    total_runs = max(int(summary.get("run_count", 0) or 0), len(runs))
     rows = [
         "| Time (UTC) | Command | Commit | Model(s) | Tokens |",
         "|---|---|---|---|---:|",
@@ -326,9 +367,12 @@ def _render_total_usage(data: dict) -> str:
 
     hidden_data = json.dumps(data, sort_keys=True, separators=(",", ":"))
     rows_text = "\n".join(rows)
+    retention_note = ""
+    if total_runs > len(runs):
+        retention_note = f"\n\nShowing the latest {len(runs)} of {total_runs} runs."
     return (
         f"{TOTAL_USAGE_HEADER}\n\n"
-        f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}\n\n"
+        f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}{retention_note}\n\n"
         "<details>\n<summary>Runs</summary>\n\n"
         f"{rows_text}\n\n"
         "</details>\n\n"

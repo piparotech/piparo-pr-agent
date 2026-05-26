@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pr_agent.algo.ai_usage import (
     AiCallUsage,
@@ -6,6 +7,11 @@ from pr_agent.algo.ai_usage import (
     publish_ai_usage_total_comment,
     record_ai_call_usage,
 )
+
+
+class Config(dict):
+    def __getattr__(self, item):
+        return self[item]
 
 
 class FakeProvider:
@@ -91,3 +97,30 @@ def test_publish_ai_usage_total_comment_upserts_once_per_run():
     assert "Total tokens used by PR-Agent on this PR:** 15" in provider.comments[0].body
     assert provider.comments[0].body.count("run-1") == 1
     assert provider.comments[0].body.count("`/review`") == 1
+
+
+@patch("pr_agent.algo.ai_usage.get_settings")
+def test_publish_ai_usage_total_comment_keeps_totals_when_trimming_old_runs(mock_get_settings):
+    mock_get_settings.return_value = SimpleNamespace(config=Config(
+        publish_ai_usage_total_comment=True,
+        publish_output=True,
+        ai_usage_total_max_runs=2,
+    ))
+    provider = FakeProvider()
+
+    for index, tokens in enumerate([10, 15, 20], start=1):
+        handler = SimpleNamespace(
+            ai_usage_run_id=f"run-{index}",
+            ai_usage_calls=[
+                AiCallUsage("openai", "gpt-5.5", "high", tokens, 0, tokens, "stop"),
+            ],
+        )
+        publish_ai_usage_total_comment(provider, handler, "/review")
+
+    body = provider.comments[0].body
+    assert len(provider.comments) == 1
+    assert "Total tokens used by PR-Agent on this PR:** 45" in body
+    assert "Showing the latest 2 of 3 runs." in body
+    assert "run-1" not in body
+    assert body.count("run-2") == 1
+    assert body.count("run-3") == 1
