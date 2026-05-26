@@ -19,6 +19,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     MockResponse, _get_azure_ad_token, _handle_streaming_response,
     _process_litellm_extra_body)
+from pr_agent.algo.ai_usage import record_ai_call_usage
 from pr_agent.algo.utils import ReasoningEffort, get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -294,6 +295,18 @@ class LiteLLMAIHandler(BaseAiHandler):
             response_log['main_pr_language'] = 'unknown'
         return response_log
 
+    @staticmethod
+    def _get_thinking_level(kwargs: dict) -> str:
+        if kwargs.get("reasoning_effort"):
+            return str(kwargs["reasoning_effort"])
+        thinking = kwargs.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+            budget_tokens = thinking.get("budget_tokens")
+            if budget_tokens:
+                return f"extended ({budget_tokens:,} tokens)"
+            return "extended"
+        return "n/a"
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -532,6 +545,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["model_id"] = model_id
                     get_logger().info(f"Using Bedrock custom inference profile: {model_id}")
 
+                thinking_level = self._get_thinking_level(kwargs)
+
                 get_logger().debug("Prompts", artifact={"system": system, "user": user})
 
                 if get_settings().config.verbosity_level >= 2:
@@ -569,6 +584,17 @@ class LiteLLMAIHandler(BaseAiHandler):
             # log the full response for debugging
             response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
             get_logger().debug("Full_response", artifact=response_log)
+
+            record_ai_call_usage(
+                self,
+                model=model,
+                response=response_obj,
+                system=system,
+                user=user,
+                output=resp,
+                finish_reason=finish_reason,
+                thinking_level=thinking_level,
+            )
 
             # for CLI debugging
             if get_settings().config.verbosity_level >= 2:

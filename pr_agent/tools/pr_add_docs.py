@@ -7,6 +7,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import publish_ai_usage_total_comment
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
@@ -65,6 +66,7 @@ class PRAddDocs:
                 self.git_provider.remove_initial_comment()
                 get_logger().info('Pushing inline code documentation...')
                 self.push_inline_docs(data)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/add_docs")
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
 

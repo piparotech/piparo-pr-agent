@@ -7,6 +7,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
@@ -94,7 +95,10 @@ class PRGenerateLabels:
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
+                    pr_labels_text = append_ai_usage_footer(
+                        pr_labels_text, self.ai_handler, "/labels", self.git_provider)
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/labels")
                 self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")

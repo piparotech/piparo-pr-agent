@@ -13,6 +13,7 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff, get_pr_multi_diffs,
@@ -167,6 +168,8 @@ class PRCodeSuggestions:
                     if get_settings().get('config', {}).get('output_relevant_configurations', False):
                         pr_body += show_relevant_configurations(relevant_section='pr_code_suggestions')
 
+                    pr_body = append_ai_usage_footer(pr_body, self.ai_handler, "/improve", self.git_provider)
+
                     # publish the PR comment
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
                         self.publish_persistent_comment_with_history(self.git_provider,
@@ -183,11 +186,14 @@ class PRCodeSuggestions:
                         else:
                             self.git_provider.publish_comment(pr_body)
 
+                    publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
+
                     # dual publishing mode
                     if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
                         await self.dual_publishing(data)
                 else:
                     await self.push_inline_code_suggestions(data)
+                    publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
             else:
@@ -234,6 +240,7 @@ class PRCodeSuggestions:
     async def publish_no_suggestions(self):
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found this time."
         pr_body += f"\n\n<sub>Last suggestions update: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.</sub>"
+        pr_body = append_ai_usage_footer(pr_body, self.ai_handler, "/improve", self.git_provider)
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning('No code suggestions found for the PR.')
@@ -242,6 +249,7 @@ class PRCodeSuggestions:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
             else:
                 self.git_provider.publish_comment(pr_body)
+            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
         else:
             get_settings().data = {"artifact": ""}
 

@@ -8,6 +8,7 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, clip_tokens, load_yaml, get_max_tokens
@@ -153,7 +154,9 @@ class PRHelpMessage:
                         answer_str = f"### Question: \n{self.question_str}\n\n"
                         answer_str += f"### Answer:\n\n"
                         answer_str += response_yaml
+                        answer_str = append_ai_usage_footer(answer_str, self.ai_handler, "/help", self.git_provider)
                         self.git_provider.publish_comment(answer_str)
+                        publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/help")
                     return ""
                 response_str = response_yaml.get('response')
                 relevant_sections = response_yaml.get('relevant_sections')
@@ -164,7 +167,9 @@ class PRHelpMessage:
                         answer_str = f"### Question: \n{self.question_str}\n\n"
                         answer_str += f"### Answer:\n\n"
                         answer_str += f"Could not find relevant information to answer the question. Please provide more details and try again."
+                        answer_str = append_ai_usage_footer(answer_str, self.ai_handler, "/help", self.git_provider)
                         self.git_provider.publish_comment(answer_str)
+                        publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/help")
                     return ""
 
                 # prepare the answer
@@ -185,7 +190,9 @@ class PRHelpMessage:
 
                 # publish the answer
                 if get_settings().config.publish_output:
+                    answer_str = append_ai_usage_footer(answer_str, self.ai_handler, "/help", self.git_provider)
                     self.git_provider.publish_comment(answer_str)
+                    publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/help")
                 else:
                     get_logger().info(f"Answer:\n{answer_str}")
             else:

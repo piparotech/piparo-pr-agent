@@ -9,6 +9,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.pr_processing import (add_ai_metadata_to_diff_files,
                                          get_pr_diff,
                                          retry_with_fallback_models)
@@ -174,6 +175,7 @@ class PRReviewer:
                 return None
 
             pr_review = self._prepare_pr_review()
+            pr_review = append_ai_usage_footer(pr_review, self.ai_handler, "/review", self.git_provider)
             get_logger().debug(f"PR output", artifact=pr_review)
 
             should_publish = get_settings().config.publish_output and self._should_publish_review_no_suggestions(pr_review)
@@ -185,6 +187,7 @@ class PRReviewer:
                 get_settings().data = {"artifact": pr_review}
                 if progress_response:
                     self.git_provider.edit_comment(progress_response, pr_review)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/review")
                 return
 
             # publish the review
@@ -200,6 +203,7 @@ class PRReviewer:
             else:
                 self.git_provider.publish_comment(pr_review)
 
+            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/review")
             self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Failed to review PR: {e}")

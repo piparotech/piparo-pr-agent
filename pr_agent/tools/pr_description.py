@@ -10,6 +10,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.pr_processing import (OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
                                          get_pr_diff,
                                          get_pr_diff_multiple_patchs,
@@ -182,6 +183,8 @@ class PRDescription:
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
                     full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
+                    full_markdown_description = append_ai_usage_footer(
+                        full_markdown_description, self.ai_handler, "/describe", self.git_provider)
                     if get_settings().pr_description.publish_description_as_comment_persistent:
                         self.git_provider.publish_persistent_comment(full_markdown_description,
                                                                      initial_header="## Title",
@@ -200,6 +203,7 @@ class PRDescription:
                             pr_url = self.git_provider.get_pr_url()
                             update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
                             self.git_provider.publish_comment(update_comment)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/describe")
                 self.git_provider.remove_initial_comment()
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')

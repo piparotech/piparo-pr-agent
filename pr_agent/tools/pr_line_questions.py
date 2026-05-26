@@ -6,6 +6,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.ai_usage import append_ai_usage_footer, publish_ai_usage_total_comment
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers, extract_hunk_lines_from_patch)
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
@@ -93,10 +94,13 @@ class PR_LineQuestions:
                 model_answer_sanitized = " " + model_answer_sanitized
 
             get_logger().info('Preparing answer...')
+            model_answer_sanitized = append_ai_usage_footer(
+                model_answer_sanitized, self.ai_handler, "/ask", self.git_provider)
             if comment_id:
                 self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
             else:
                 self.git_provider.publish_comment(model_answer_sanitized)
+            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/ask")
 
         return ""
         

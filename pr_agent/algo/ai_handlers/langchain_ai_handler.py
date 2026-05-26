@@ -14,6 +14,7 @@ from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type
 from langchain_core.runnables import Runnable
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.ai_usage import record_ai_call_usage
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -98,6 +99,15 @@ class LangChainOpenAIHandler(BaseAiHandler):
                 resp = await llm.ainvoke(input=messages)
 
             finish_reason = "completed"
+            record_ai_call_usage(
+                self,
+                model=model,
+                response=resp,
+                system=system,
+                user=user,
+                output=resp.content,
+                finish_reason=finish_reason,
+            )
             return resp.content, finish_reason
 
         except openai.RateLimitError as e:
