@@ -1,6 +1,5 @@
 [pr_reviewer]
 enable_review_labels_effort = true
-enable_auto_approval = true
 extra_instructions = "On follow-up reviews, report only issues introduced by commits since the previous PR-Agent review. Do not surface unrelated pre-existing findings from earlier PR commits."
 
 [github_app]
@@ -14,10 +13,6 @@ handle_push_trigger = true
 push_commands = [
     "/review -i"
 ]
-
-[review_agent]
-enabled = true
-publish_output = true
 
 [pr_code_suggestions]
 extra_instructions = "Avoid churn on follow-up runs: suggest only changes directly related to the latest pushed commits, not unrelated pre-existing code in the PR."
