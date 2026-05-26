@@ -31,7 +31,7 @@ PIPARO_COMMAND_HINT = (
     "\n\n---\n\n"
     "💬 **Need another pass?** Comment `@piparo-agent /review`, "
     "`@piparo-agent /improve`, `@piparo-agent /describe`, "
-    "or `@piparo-agent /ask <question>`."
+    "or just `@piparo-agent <question or instruction>`."
 )
 
 
