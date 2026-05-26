@@ -18,3 +18,7 @@ push_commands = [
 [review_agent]
 enabled = true
 publish_output = true
+
+[pr_code_suggestions]
+demand_code_suggestions_self_review = true
+code_suggestions_self_review_text = "**Author self-review**: I have read the low-impact PR code suggestions and addressed the relevant ones."
