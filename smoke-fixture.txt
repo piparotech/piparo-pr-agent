@@ -1,0 +1,2 @@
+This draft PR is intentionally kept open for the PR-Agent smoke test.
+The smoke job posts and deletes temporary comments here to verify webhook, LLM, and GitHub comment flow.
