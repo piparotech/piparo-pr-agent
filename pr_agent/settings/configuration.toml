@@ -75,6 +75,21 @@ extract_issue_from_branch = true
 # followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later.
 branch_issue_regex = ""
 
+[queue]
+enabled = false
+backend = "redis"
+redis_url = ""
+redis_key_prefix = "pr-agent:queue"
+max_concurrent_prs = 2
+local_worker_count = 0 # 0 means use max_concurrent_prs workers in this process
+lease_seconds = 1800
+heartbeat_seconds = 60
+poll_seconds = 0.5
+lock_ms = 5000
+finish_lock_wait_seconds = 5
+job_ttl_seconds = 604800
+run_pr_commands_parallel = false
+
 
 [pr_reviewer] # /review #
 # enable/disable features

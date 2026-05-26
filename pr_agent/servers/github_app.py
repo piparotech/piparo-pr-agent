@@ -9,7 +9,7 @@ import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
-from starlette_context import context
+from starlette_context import context, request_cycle_context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent
@@ -22,6 +22,8 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.pr_processing_queue import (get_github_pr_url,
+                                                   get_pr_processing_queue)
 from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -50,7 +52,17 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     context["installation_id"] = installation_id
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
-    background_tasks.add_task(handle_request, body, event=request.headers.get("X-GitHub-Event", None))
+    event = request.headers.get("X-GitHub-Event", None)
+    queue = get_pr_processing_queue()
+    pr_url = get_github_pr_url(body)
+    if queue.enabled and pr_url:
+        try:
+            await queue.enqueue_github_webhook(body, event, pr_url, installation_id)
+        except Exception as e:
+            get_logger().error("Failed to enqueue GitHub webhook", error=str(e), pr_url=pr_url)
+            raise HTTPException(status_code=503, detail="PR processing queue unavailable") from e
+    else:
+        background_tasks.add_task(handle_request, body, event=event)
     return {}
 
 
@@ -404,6 +416,17 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if not commands:
         get_logger().info(f"New PR, but no auto commands configured")
         return
+    run_parallel = get_settings().get("queue.run_pr_commands_parallel", False)
+    if isinstance(run_parallel, str):
+        run_parallel = run_parallel.lower() in {"1", "true", "yes", "on"}
+    if run_parallel:
+        base_context = copy.deepcopy(context.data)
+        await asyncio.gather(*[
+            _run_auto_command_github(commands_conf, command, agent, api_url, log_context, base_context)
+            for command in commands
+        ])
+        return
+
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         split_command = command.split(" ")
@@ -413,6 +436,15 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         new_command = ' '.join([command] + other_args)
         get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
         await agent.handle_request(api_url, new_command)
+
+
+async def _run_auto_command_github(commands_conf: str, command: str, agent: PRAgent, api_url: str,
+                                   log_context: dict, base_context: dict):
+    command_context = copy.deepcopy(base_context)
+    with request_cycle_context(command_context):
+        get_settings().set("config.is_auto_command", True)
+        get_logger().info(f"{commands_conf}. Performing auto command '{command}', for {api_url=}")
+        await PRAgent(ai_handler=agent.ai_handler).handle_request(api_url, command)
 
 
 @router.get("/")
@@ -427,6 +459,16 @@ if get_settings().github_app.override_deployment_type:
 middleware = [Middleware(RawContextMiddleware)]
 app = FastAPI(middleware=middleware)
 app.include_router(router)
+
+
+@app.on_event("startup")
+async def start_pr_processing_queue():
+    await get_pr_processing_queue().start()
+
+
+@app.on_event("shutdown")
+async def stop_pr_processing_queue():
+    await get_pr_processing_queue().stop()
 
 
 def start():
