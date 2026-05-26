@@ -129,7 +129,8 @@ class TestPRDescriptionCore:
 
         assert body.startswith("### **User description**")
         assert body.index("piparo-pr-agent:generated-start") > body.index("Please keep my checklist first.")
-        assert body.index("piparo-pr-agent:generated-end") < body.index("### **PR Type**")
+        assert body.index("### **PR Type**") > body.index("piparo-pr-agent:generated-start")
+        assert body.index("piparo-pr-agent:generated-end") > body.index("### **PR Type**")
 
     @patch('pr_agent.tools.pr_description.get_settings')
     def test_prepare_pr_answer_with_markers_replaces_plain_and_comment_markers(self, mock_get_settings):

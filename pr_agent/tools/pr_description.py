@@ -219,19 +219,19 @@ class PRDescription:
         if "piparo-pr-agent:generated-start" in pr_body:
             return pr_body
 
-        notice = PIPARO_DESCRIPTION_NOTICE + "<!-- piparo-pr-agent:generated-end -->"
         user_description_match = re.match(
             r"(?P<user_description>\s*### \*\*User description\*\*.*?)(?P<separator>\n\n___\n\n)",
             pr_body,
             flags=re.DOTALL,
         )
         if user_description_match:
+            generated_body = pr_body[user_description_match.end():].strip()
             return (
                 f"{user_description_match.group('user_description')}"
                 f"{user_description_match.group('separator')}"
-                f"{notice}"
-                f"{user_description_match.group('separator')}"
-                f"{pr_body[user_description_match.end():].strip()}\n"
+                f"{PIPARO_DESCRIPTION_NOTICE}"
+                f"{generated_body}\n\n"
+                "<!-- piparo-pr-agent:generated-end -->\n"
             )
 
         return PIPARO_DESCRIPTION_NOTICE + pr_body.strip() + "\n\n<!-- piparo-pr-agent:generated-end -->\n"
