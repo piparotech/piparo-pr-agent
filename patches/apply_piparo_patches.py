@@ -69,10 +69,7 @@ def patch_suggestions() -> None:
     text = replace_once(text, old_method_anchor, helper_method + old_method_anchor, "suggestions progress helper")
 
     old_empty_method = '        pr_body = "## PR Code Suggestions ✨\\n\\nNo code suggestions found for the PR."'
-    new_empty_method = (
-        f'        pr_body = "## PR Code Suggestions ✨\\n\\n{SUMMARY_NOTE}'
-        '\\n\\nNo code suggestions found this time."'
-    )
+    new_empty_method = '        pr_body = "## PR Code Suggestions ✨\\n\\nNo code suggestions found this time."'
     text = replace_once(text, old_empty_method, new_empty_method, "suggestions empty output")
 
     old_summary = '''            pr_body = "## PR Code Suggestions ✨\\n\\n"
@@ -85,11 +82,12 @@ def patch_suggestions() -> None:
                 pr_body += "Explore these optional code suggestions:\\n\\n"
 '''
     new_summary = f'''            pr_body = "## PR Code Suggestions ✨\\n\\n"
-            pr_body += "{SUMMARY_NOTE}\\n\\n"
 
             if len(data.get('code_suggestions', [])) == 0:
                 pr_body += "No code suggestions found this time."
                 return pr_body
+
+            pr_body += "{SUMMARY_NOTE}\\n\\n"
 
             if get_settings().config.is_auto_command:
                 pass
