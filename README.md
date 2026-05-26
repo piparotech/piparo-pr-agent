@@ -1,20 +1,36 @@
 # piparo-pr-agent
 
-Piparo custom image for [PR-Agent](https://github.com/qodo-ai/pr-agent).
+Piparo-maintained PR-Agent fork based on [`The-PR-Agent/pr-agent`](https://github.com/The-PR-Agent/pr-agent).
 
-Changes on top of the pinned upstream image:
+This repository keeps the existing `piparotech/piparo-pr-agent` URL, but tracks upstream via an `upstream` git remote instead of using GitHub's fork relationship.
 
-- Adds friendly `/improve` summary text.
-- Shows low-impact suggestions in one summary comment.
-- Keeps high-impact suggestions eligible for inline publishing via PR-Agent config.
-- Publishes an immediate "in progress" comment for `/review` and `/improve`, then updates that same comment with the final content.
-- Adds a short command hint to the review comment.
-- Marks `/describe` output as a PR-Agent addition with a visible banner and hidden generated-content markers.
+## Piparo changes
 
-The image is published to GHCR with a UTC `YYYY-MM-DD` tag, for example:
+- Friendly `/improve` summary text.
+- Low-impact suggestions collected into one summary comment.
+- High-impact suggestions can still be published inline through PR-Agent config.
+- Persistent `/review` and `/improve` progress comments that are updated with final output.
+- Review comments include a short `@piparo-agent` command hint.
+- `/describe` output is wrapped in visible Piparo generated-content markers.
+- The image is built from this repository's source instead of patching files inside an upstream image.
+
+## Image
+
+The GitHub Actions workflow publishes dated images:
 
 ```text
-ghcr.io/piparotech/piparo-pr-agent:2026-05-26
+ghcr.io/piparotech/piparo-pr-agent:YYYY-MM-DD
 ```
 
-The GitHub Actions workflow updates `piparotech/infra` so `pr-agent/pr-agent.yaml` uses the same dated tag. It requires a repository secret named `DEPLOY_PAT` with write access to `piparotech/infra`.
+It then updates `piparotech/infra` at `pr-agent/pr-agent.yaml` to the same dated tag. The workflow needs `DEPLOY_PAT` with write access to `piparotech/infra`.
+
+## Sync upstream
+
+```bash
+git remote add upstream git@github.com:The-PR-Agent/pr-agent.git
+git remote set-url --push upstream DISABLED
+git fetch upstream main --tags
+git checkout main
+git merge upstream/main
+# resolve conflicts, run tests/build, then commit and push
+```

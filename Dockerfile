@@ -1,9 +1,20 @@
-FROM pragent/pr-agent@sha256:f9b562fdd2ec5cbbcfc25d629ceb1df8d2431cb716640205747c558d5aef080c
+FROM python:3.12.13-slim
 
-COPY patches/apply_piparo_patches.py /tmp/apply_piparo_patches.py
-RUN python /tmp/apply_piparo_patches.py \
-  && python -m py_compile \
-    /app/pr_agent/tools/pr_code_suggestions.py \
-    /app/pr_agent/tools/pr_reviewer.py \
-    /app/pr_agent/tools/pr_description.py \
-  && rm /tmp/apply_piparo_patches.py
+RUN apt-get update \
+  && apt-get install --no-install-recommends -y git curl \
+  && apt-get clean \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml requirements.txt ./
+COPY docs docs
+RUN pip install --no-cache-dir . \
+  && rm pyproject.toml requirements.txt
+
+ENV PYTHONPATH=/app
+
+COPY pr_agent pr_agent
+
+EXPOSE 3000
+CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.github_app:app"]
