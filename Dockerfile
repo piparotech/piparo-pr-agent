@@ -7,14 +7,14 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml requirements.txt ./
+COPY requirements.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements.txt \
+  && rm requirements.txt
+
 COPY docs docs
-RUN pip install --no-cache-dir . \
-  && rm pyproject.toml requirements.txt
+COPY pr_agent pr_agent
 
 ENV PYTHONPATH=/app
-
-COPY pr_agent pr_agent
 
 EXPOSE 3000
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.github_app:app"]
