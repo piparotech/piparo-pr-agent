@@ -7,7 +7,7 @@ extra_instructions = "On follow-up reviews, report only issues introduced by com
 pr_commands = [
     "/describe --pr_description.publish_description_as_comment=true",
     "/improve",
-    "/agentic_review"
+    "/review"
 ]
 
 handle_push_trigger = true
