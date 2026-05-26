@@ -46,8 +46,8 @@ class OpenAIHandler(BaseAiHandler):
         try:
             if img_path:
                 get_logger().warning(f"Image path is not supported for OpenAIHandler. Ignoring image path: {img_path}")
-            get_logger().info("System: ", system)
-            get_logger().info("User: ", user)
+            get_logger().debug("System prompt", artifact={"system": system})
+            get_logger().debug("User prompt", artifact={"user": user})
             messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
             client = AsyncOpenAI()
             chat_completion = await client.chat.completions.create(
@@ -58,8 +58,9 @@ class OpenAIHandler(BaseAiHandler):
             resp = chat_completion.choices[0].message.content
             finish_reason = chat_completion.choices[0].finish_reason
             usage = chat_completion.usage
-            get_logger().info("AI response", response=resp, messages=messages, finish_reason=finish_reason,
-                              model=model, usage=usage)
+            get_logger().debug("AI response", artifact={"response": resp, "messages": messages,
+                                                          "finish_reason": finish_reason, "model": model,
+                                                          "usage": usage})
             record_ai_call_usage(
                 self,
                 model=model,
