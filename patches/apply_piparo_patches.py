@@ -110,7 +110,8 @@ def patch_suggestions() -> None:
     text = replace_once(text, old_method_anchor, helper_method + old_method_anchor, "suggestions progress helper")
 
     old_empty_method = '        pr_body = "## PR Code Suggestions ✨\\n\\nNo code suggestions found for the PR."'
-    new_empty_method = '        pr_body = "## PR Code Suggestions ✨\\n\\nNo code suggestions found this time."'
+    new_empty_method = '''        pr_body = "## PR Code Suggestions ✨\\n\\nNo code suggestions found this time."
+        pr_body += f"\\n\\n<sub>Last suggestions update: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.</sub>"'''
     text = replace_once(text, old_empty_method, new_empty_method, "suggestions empty output")
 
     old_summary = '''            pr_body = "## PR Code Suggestions ✨\\n\\n"
@@ -126,6 +127,7 @@ def patch_suggestions() -> None:
 
             if len(data.get('code_suggestions', [])) == 0:
                 pr_body += "No code suggestions found this time."
+                pr_body += f"\\n\\n<sub>Last suggestions update: {{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}}.</sub>"
                 return pr_body
 
             pr_body += "{SUMMARY_NOTE}\\n\\n"
@@ -134,6 +136,15 @@ def patch_suggestions() -> None:
                 pass
 '''
     text = replace_once(text, old_summary, new_summary, "suggestions summary note")
+
+    old_suggestions_return = '''            pr_body += """</tr></tbody></table>"""
+            return pr_body
+'''
+    new_suggestions_return = '''            pr_body += """</tr></tbody></table>"""
+            pr_body += f"\\n\\n<sub>Last suggestions update: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.</sub>"
+            return pr_body
+'''
+    text = replace_once(text, old_suggestions_return, new_suggestions_return, "suggestions update timestamp")
 
     SUGGESTIONS.write_text(text)
 
@@ -221,6 +232,8 @@ def patch_reviewer() -> None:
         if get_settings().get('config', {}).get('output_relevant_configurations', False):
 '''
     new_command_hint_anchor = f'''        if self.git_provider.is_supported("gfm_markdown"):
+            updated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            markdown_text += f"\\n\\n<sub>Last review update: {{updated_at}}.</sub>"
             markdown_text += {COMMAND_HINT!r}
 
         # Output the relevant configurations if enabled
