@@ -115,6 +115,22 @@ class TestPRDescriptionCore:
             "docs": [("docs/readme.md", "Update docs", "Clarifies setup.")],
         }
 
+    def test_add_piparo_generated_notice_goes_after_user_description(self):
+        obj = _make_instance("")
+        pr_body = (
+            "### **User description**\n"
+            "Please keep my checklist first.\n\n"
+            "___\n\n"
+            "### **PR Type**\n"
+            "Bug fix\n"
+        )
+
+        body = obj._add_piparo_generated_notice(pr_body)
+
+        assert body.startswith("### **User description**")
+        assert body.index("piparo-pr-agent:generated-start") > body.index("Please keep my checklist first.")
+        assert body.index("piparo-pr-agent:generated-end") < body.index("### **PR Type**")
+
     @patch('pr_agent.tools.pr_description.get_settings')
     def test_prepare_pr_answer_with_markers_replaces_plain_and_comment_markers(self, mock_get_settings):
         settings = MagicMock()
