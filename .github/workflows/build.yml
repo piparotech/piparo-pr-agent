@@ -26,13 +26,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Set deploy image tag
         id: image-tag
@@ -45,21 +40,24 @@ jobs:
         id: created
         run: echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}
-            ${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.short_sha }}
-            ${{ env.IMAGE_NAME }}:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.created=${{ steps.created.outputs.timestamp }}
-          cache-from: type=gha,scope=piparo-pr-agent
-          cache-to: type=gha,mode=max,scope=piparo-pr-agent
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
+          SHORT_SHA: ${{ steps.image-tag.outputs.short_sha }}
+          CREATED: ${{ steps.created.outputs.timestamp }}
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=${CREATED}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            -t "${IMAGE_NAME}:${SHORT_SHA}" \
+            -t "${IMAGE_NAME}:latest" \
+            .
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+          docker push "${IMAGE_NAME}:${SHORT_SHA}"
+          docker push "${IMAGE_NAME}:latest"
 
   update-infra:
     runs-on: ubuntu-latest
