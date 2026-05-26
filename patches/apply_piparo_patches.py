@@ -2,6 +2,7 @@ from pathlib import Path
 
 SUGGESTIONS = Path("/app/pr_agent/tools/pr_code_suggestions.py")
 REVIEWER = Path("/app/pr_agent/tools/pr_reviewer.py")
+DESCRIPTION = Path("/app/pr_agent/tools/pr_description.py")
 
 SUMMARY_NOTE = (
     "Nice work — the code is already in good shape. "
@@ -16,6 +17,13 @@ COMMAND_HINT = (
     "or `@piparo-agent /ask <question>`."
 )
 
+DESCRIPTION_NOTICE = (
+    "<!-- piparo-pr-agent:generated-start -->\n\n"
+    "> 🤖 **PR-Agent addition**\n"
+    "> This section was added by `@piparo-agent /describe` from the current diff. "
+    "Please review/edit as needed.\n\n"
+)
+
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
     if old not in text:
@@ -23,6 +31,39 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
             return text
         raise RuntimeError(f"Patch target not found: {label}")
     return text.replace(old, new, 1)
+
+
+def patch_description() -> None:
+    text = DESCRIPTION.read_text()
+
+    old_notice_anchor = '''            # Output the relevant configurations if enabled
+            if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                pr_body += show_relevant_configurations(relevant_section='pr_description')
+
+            if get_settings().config.publish_output:
+'''
+    new_notice_anchor = '''            # Output the relevant configurations if enabled
+            if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                pr_body += show_relevant_configurations(relevant_section='pr_description')
+
+            if not get_settings().pr_description.use_description_markers:
+                pr_body = self._add_piparo_generated_notice(pr_body)
+
+            if get_settings().config.publish_output:
+'''
+    text = replace_once(text, old_notice_anchor, new_notice_anchor, "description generated notice")
+
+    old_method_anchor = '''    async def _prepare_prediction(self, model: str) -> None:
+'''
+    notice_method = f'''    def _add_piparo_generated_notice(self, pr_body: str) -> str:
+        if "piparo-pr-agent:generated-start" in pr_body:
+            return pr_body
+        return {DESCRIPTION_NOTICE!r} + pr_body.strip() + "\\n\\n<!-- piparo-pr-agent:generated-end -->\\n"
+
+'''
+    text = replace_once(text, old_method_anchor, notice_method + old_method_anchor, "description notice helper")
+
+    DESCRIPTION.write_text(text)
 
 
 def patch_suggestions() -> None:
@@ -190,6 +231,7 @@ def patch_reviewer() -> None:
     REVIEWER.write_text(text)
 
 
+patch_description()
 patch_suggestions()
 patch_reviewer()
 print("Applied Piparo PR-Agent patches")

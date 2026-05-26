@@ -5,4 +5,5 @@ RUN python /tmp/apply_piparo_patches.py \
   && python -m py_compile \
     /app/pr_agent/tools/pr_code_suggestions.py \
     /app/pr_agent/tools/pr_reviewer.py \
+    /app/pr_agent/tools/pr_description.py \
   && rm /tmp/apply_piparo_patches.py

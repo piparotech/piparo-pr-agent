@@ -9,6 +9,7 @@ Changes on top of the pinned upstream image:
 - Keeps high-impact suggestions eligible for inline publishing via PR-Agent config.
 - Publishes an immediate "in progress" comment for `/review` and `/improve`, then updates that same comment with the final content.
 - Adds a short command hint to the review comment.
+- Marks `/describe` output as a PR-Agent addition with a visible banner and hidden generated-content markers.
 
 The image is published to GHCR with a UTC `YYYY-MM-DD` tag, for example:
 
