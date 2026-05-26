@@ -34,6 +34,7 @@ PIPARO_COMMAND_HINT = (
     "`@piparo-agent /improve`, `@piparo-agent /describe`, "
     "or just `@piparo-agent <question or instruction>`."
 )
+PIPARO_REVIEW_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:review -->"
 
 
 class PRReviewer:
@@ -163,7 +164,6 @@ class PRReviewer:
             if (get_settings().config.publish_output and get_settings().config.publish_output_progress
                     and get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental):
                 progress_response = self._publish_or_update_progress_comment(
-                    review_header,
                     f"{review_header}\n\n⏳ Reviewing this PR now. I’ll update this comment with the full review when I’m done."
                 )
             elif get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
@@ -171,6 +171,7 @@ class PRReviewer:
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
             if not self.prediction:
+                self._remove_progress_comment(progress_response)
                 self.git_provider.remove_initial_comment()
                 return None
 
@@ -185,21 +186,13 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
-                if progress_response:
-                    self.git_provider.edit_comment(progress_response, pr_review)
+                self._remove_progress_comment(progress_response)
                 publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/review")
                 return
 
             # publish the review
             if get_settings().pr_reviewer.persistent_comment and not self.incremental.is_incremental:
-                if progress_response:
-                    self.git_provider.edit_comment(progress_response, pr_review)
-                else:
-                    final_update_message = get_settings().pr_reviewer.final_update_message
-                    self.git_provider.publish_persistent_comment(pr_review,
-                                                                initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
-                                                                update_header=True,
-                                                                final_update_message=final_update_message, )
+                self._publish_persistent_review(pr_review, review_header, progress_response)
             else:
                 self.git_provider.publish_comment(pr_review)
 
@@ -207,16 +200,37 @@ class PRReviewer:
             self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Failed to review PR: {e}")
+            self._remove_progress_comment(locals().get("progress_response"))
 
-    def _publish_or_update_progress_comment(self, initial_header: str, body: str):
+    def _publish_or_update_progress_comment(self, body: str):
+        progress_body = f"{PIPARO_REVIEW_PROGRESS_MARKER}\n{body}"
         try:
             for comment in self.git_provider.get_issue_comments():
-                if comment.body.startswith(initial_header):
-                    self.git_provider.edit_comment(comment, body)
+                if getattr(comment, "body", "").startswith(PIPARO_REVIEW_PROGRESS_MARKER):
+                    self.git_provider.edit_comment(comment, progress_body)
                     return comment
         except Exception as e:
             get_logger().exception(f"Failed to update progress comment, error: {e}")
-        return self.git_provider.publish_comment(body)
+        return self.git_provider.publish_comment(progress_body)
+
+    def _publish_persistent_review(self, pr_review: str, review_header: str, progress_response=None):
+        final_update_message = get_settings().pr_reviewer.final_update_message
+        final_comment = self.git_provider.publish_persistent_comment(pr_review,
+                                                                     initial_header=review_header,
+                                                                     update_header=True,
+                                                                     final_update_message=final_update_message, )
+        if progress_response and final_comment is not progress_response:
+            self._remove_progress_comment(progress_response)
+        return final_comment
+
+    def _remove_progress_comment(self, progress_response=None):
+        if not progress_response:
+            return
+        try:
+            if getattr(progress_response, "body", "").startswith(PIPARO_REVIEW_PROGRESS_MARKER):
+                self.git_provider.remove_comment(progress_response)
+        except Exception as e:
+            get_logger().exception(f"Failed to remove progress comment, error: {e}")
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
         return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review

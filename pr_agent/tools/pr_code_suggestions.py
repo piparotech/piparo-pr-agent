@@ -37,6 +37,7 @@ PIPARO_SUGGESTIONS_SUMMARY_NOTE = (
     "The notes below are small optional refinements, so I’m keeping them in one place "
     "instead of spreading them across the diff."
 )
+PIPARO_SUGGESTIONS_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:suggestions -->"
 
 
 class PRCodeSuggestions:
@@ -109,19 +110,17 @@ class PRCodeSuggestions:
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
 
-            # Publish or update a persistent "in progress" suggestions comment.
+            # Publish or update a dedicated progress comment. The marker keeps it separate from final output.
             if get_settings().config.publish_output and get_settings().config.publish_output_progress:
                 progress_body = (
                     "## PR Code Suggestions ✨\n\n"
                     "⏳ Looking through the changed code now. I’ll update this comment with suggestions when I’m done."
                 )
                 if self.git_provider.is_supported("gfm_markdown"):
-                    self.progress_response = self._publish_or_update_progress_comment(
-                        "## PR Code Suggestions ✨", progress_body
-                    )
+                    self.progress_response = self._publish_or_update_progress_comment(progress_body)
                 else:
                     self.progress_response = self.git_provider.publish_comment(
-                        "Preparing suggestions...", is_temporary=False
+                        "Preparing suggestions...", is_temporary=True
                     )
 
             # # call the model to get the suggestions, and self-reflect on them
@@ -194,8 +193,7 @@ class PRCodeSuggestions:
                 else:
                     await self.push_inline_code_suggestions(data)
                     publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
-                    if self.progress_response:
-                        self.git_provider.remove_comment(self.progress_response)
+                    self._remove_progress_comment()
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
@@ -206,7 +204,7 @@ class PRCodeSuggestions:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
                 if self.progress_response:
-                    self.git_provider.remove_comment(self.progress_response)
+                    self._remove_progress_comment()
                 else:
                     try:
                         self.git_provider.remove_initial_comment()
@@ -214,15 +212,25 @@ class PRCodeSuggestions:
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
 
-    def _publish_or_update_progress_comment(self, initial_header: str, body: str):
+    def _publish_or_update_progress_comment(self, body: str):
+        progress_body = f"{PIPARO_SUGGESTIONS_PROGRESS_MARKER}\n{body}"
         try:
             for comment in self.git_provider.get_issue_comments():
-                if comment.body.startswith(initial_header):
-                    self.git_provider.edit_comment(comment, body)
+                if getattr(comment, "body", "").startswith(PIPARO_SUGGESTIONS_PROGRESS_MARKER):
+                    self.git_provider.edit_comment(comment, progress_body)
                     return comment
         except Exception as e:
             get_logger().exception(f"Failed to update progress comment, error: {e}")
-        return self.git_provider.publish_comment(body)
+        return self.git_provider.publish_comment(progress_body)
+
+    def _remove_progress_comment(self):
+        if not self.progress_response:
+            return
+        try:
+            if getattr(self.progress_response, "body", "").startswith(PIPARO_SUGGESTIONS_PROGRESS_MARKER):
+                self.git_provider.remove_comment(self.progress_response)
+        except Exception as e:
+            get_logger().exception(f"Failed to remove progress comment, error: {e}")
 
     async def add_self_review_text(self, pr_body):
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
