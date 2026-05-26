@@ -16,13 +16,13 @@ This repository keeps the existing `piparotech/piparo-pr-agent` URL, but tracks 
 
 ## Image
 
-The GitHub Actions workflow publishes dated images:
+The GitHub Actions workflow publishes unique deploy images:
 
 ```text
-ghcr.io/piparotech/piparo-pr-agent:YYYY-MM-DD
+ghcr.io/piparotech/piparo-pr-agent:YYYY-MM-DD-<short-sha>
 ```
 
-It then updates `piparotech/infra` at `pr-agent/pr-agent.yaml` to the same dated tag. The workflow needs `DEPLOY_PAT` with write access to `piparotech/infra`.
+It then updates `piparotech/infra` at `pr-agent/pr-agent.yaml` to the same unique tag. The workflow needs `DEPLOY_PAT` with write access to `piparotech/infra`.
 
 ## Sync upstream
 
