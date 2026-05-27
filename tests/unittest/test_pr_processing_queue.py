@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 import time
 from collections import defaultdict
 
@@ -199,6 +200,34 @@ async def test_redis_queue_requeues_expired_active_pr(queue_settings):
     assert second.owner != first.owner
 
 
+@pytest.mark.asyncio
+async def test_redis_queue_runs_claimed_job_off_web_event_loop(queue_settings):
+    async def blocking_runner(job):
+        time.sleep(0.05)
+
+    queue = RedisPRProcessingQueue(runner=blocking_runner)
+    queue.redis = FakeRedis()
+    await _enqueue(queue, "https://api.github.com/repos/org/repo/pulls/1")
+    claimed = await queue.claim_next_job()
+    ticks = 0
+    running = True
+
+    async def tick():
+        nonlocal ticks
+        while running:
+            await asyncio.sleep(0.005)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    await asyncio.sleep(0)
+    await queue._run_claimed_job(claimed)
+    running = False
+    await ticker
+
+    assert ticks >= 3
+    assert await queue.redis.llen(queue.jobs_key(claimed.job.pr_hash)) == 0
+
+
 def test_get_github_pr_url_extracts_supported_payload_shapes():
     assert get_github_pr_url({"pull_request": {"url": "pr-url"}}) == "pr-url"
     assert get_github_pr_url({"issue": {"pull_request": {"url": "issue-pr-url"}}}) == "issue-pr-url"
@@ -212,6 +241,8 @@ async def test_github_auto_commands_can_run_in_parallel(monkeypatch):
 
     active = 0
     max_active = 0
+    active_lock = threading.Lock()
+    all_started = threading.Barrier(3)
 
     class FakeAgent:
         def __init__(self, ai_handler=None):
@@ -219,12 +250,15 @@ async def test_github_auto_commands_can_run_in_parallel(monkeypatch):
 
         async def handle_request(self, pr_url, command):
             nonlocal active, max_active
-            active += 1
-            max_active = max(max_active, active)
+            with active_lock:
+                active += 1
+                max_active = max(max_active, active)
             try:
+                all_started.wait(timeout=1)
                 await asyncio.sleep(0.01)
             finally:
-                active -= 1
+                with active_lock:
+                    active -= 1
 
     monkeypatch.setattr(github_app, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_app, "apply_repo_settings", lambda pr_url: None)
@@ -243,3 +277,45 @@ async def test_github_auto_commands_can_run_in_parallel(monkeypatch):
         )
 
     assert max_active == 3
+
+
+@pytest.mark.asyncio
+async def test_github_auto_commands_do_not_block_current_event_loop(monkeypatch):
+    import pr_agent.servers.github_app as github_app
+
+    class FakeAgent:
+        def __init__(self, ai_handler=None):
+            self.ai_handler = ai_handler
+
+        async def handle_request(self, pr_url, command):
+            time.sleep(0.05)
+
+    monkeypatch.setattr(github_app, "PRAgent", FakeAgent)
+    monkeypatch.setattr(github_app, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(github_app, "should_process_pr_logic", lambda body: True)
+
+    with request_cycle_context({"settings": copy.deepcopy(global_settings), "git_provider": {}}):
+        get_settings().set("QUEUE.RUN_PR_COMMANDS_PARALLEL", True)
+        get_settings().set("GITHUB_APP.PR_COMMANDS", ["/review"])
+        ticks = 0
+        running = True
+
+        async def tick():
+            nonlocal ticks
+            while running:
+                await asyncio.sleep(0.005)
+                ticks += 1
+
+        ticker = asyncio.create_task(tick())
+        await asyncio.sleep(0)
+        await github_app._perform_auto_commands_github(
+            "pr_commands",
+            FakeAgent(ai_handler="fake-ai"),
+            {"pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"}},
+            "https://api.github.com/repos/org/repo/pulls/1",
+            {},
+        )
+        running = False
+        await ticker
+
+    assert ticks >= 3

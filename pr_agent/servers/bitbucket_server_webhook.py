@@ -20,6 +20,7 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.async_utils import run_async_function_in_thread
 from pr_agent.servers.utils import verify_signature
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -39,7 +40,7 @@ def handle_request(
         except Exception as e:
             get_logger().error(f"Failed to handle webhook: {e}")
 
-    background_tasks.add_task(inner)
+    background_tasks.add_task(run_async_function_in_thread, inner)
 
 def should_process_pr_logic(data) -> bool:
     try:
@@ -193,7 +194,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         except Exception as e:
             get_logger().error(f"Failed to handle webhook: {e}")
 
-    background_tasks.add_task(inner)
+    background_tasks.add_task(run_async_function_in_thread, inner)
 
     return JSONResponse(
         status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"})

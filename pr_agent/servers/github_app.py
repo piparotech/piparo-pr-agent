@@ -22,6 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.async_utils import run_async_function_in_thread, run_async_function_off_loop
 from pr_agent.servers.pr_processing_queue import (get_github_pr_url,
                                                    get_pr_processing_queue)
 from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
@@ -62,7 +63,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             get_logger().error("Failed to enqueue GitHub webhook", error=str(e), pr_url=pr_url)
             raise HTTPException(status_code=503, detail="PR processing queue unavailable") from e
     else:
-        background_tasks.add_task(handle_request, body, event=event)
+        background_tasks.add_task(run_async_function_in_thread, handle_request, body, event=event)
     return {}
 
 
@@ -422,7 +423,8 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if run_parallel:
         base_context = copy.deepcopy(context.data)
         await asyncio.gather(*[
-            _run_auto_command_github(commands_conf, command, agent, api_url, log_context, base_context)
+            run_async_function_off_loop(_run_auto_command_github, commands_conf, command, agent, api_url,
+                                        log_context, base_context)
             for command in commands
         ])
         return

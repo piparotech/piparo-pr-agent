@@ -13,6 +13,7 @@ from starlette_context import request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
+from pr_agent.servers.async_utils import run_async_function_off_loop
 
 
 class PRQueueError(Exception):
@@ -259,7 +260,7 @@ class RedisPRProcessingQueue:
         heartbeat = asyncio.create_task(self._heartbeat(claimed))
         should_finish = False
         try:
-            await self.runner(claimed.job)
+            await run_async_function_off_loop(self.runner, claimed.job)
             should_finish = True
         except asyncio.CancelledError:
             raise

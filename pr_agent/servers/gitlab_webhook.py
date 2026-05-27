@@ -16,10 +16,11 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider
-from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.servers.async_utils import run_async_function_in_thread
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -270,7 +271,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 await handle_request(url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
 
-    background_tasks.add_task(inner, request_json)
+    background_tasks.add_task(run_async_function_in_thread, inner, request_json)
     end_time = datetime.now()
     get_logger().info(f"Processing time: {end_time - start_time}", request=request_json)
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))

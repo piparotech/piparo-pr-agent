@@ -1,3 +1,5 @@
+import asyncio
+
 from dynaconf import Dynaconf
 
 from pr_agent.config_loader import get_settings
@@ -20,6 +22,9 @@ class PRConfig:
         self.git_provider = get_git_provider()(pr_url)
 
     async def run(self):
+        return await asyncio.to_thread(self._run_sync)
+
+    def _run_sync(self):
         get_logger().info('Getting configuration settings...')
         get_logger().info('Preparing configs...')
         pr_comment = self._prepare_pr_configs()

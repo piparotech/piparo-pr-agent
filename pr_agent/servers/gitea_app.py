@@ -14,6 +14,7 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.async_utils import run_async_function_in_thread
 from pr_agent.servers.utils import verify_signature
 
 # Setup logging and router
@@ -31,8 +32,13 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
     context["settings"] = copy.deepcopy(global_settings)
     context["git_provider"] = {}
 
-    # Handle the webhook in background
-    background_tasks.add_task(handle_request, body, event=request.headers.get("X-Gitea-Event", None))
+    # Handle the webhook in background, outside the server event loop.
+    background_tasks.add_task(
+        run_async_function_in_thread,
+        handle_request,
+        body,
+        event=request.headers.get("X-Gitea-Event", None),
+    )
     return {}
 
 async def get_body(request: Request):

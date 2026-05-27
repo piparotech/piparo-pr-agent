@@ -1,3 +1,4 @@
+import asyncio
 import time
 from enum import Enum
 from typing import List
@@ -258,6 +259,9 @@ class PRSimilarIssue:
 
 
     async def run(self):
+        return await asyncio.to_thread(self._run_sync)
+
+    def _run_sync(self):
         if not self.supported:
             message = "The /similar_issue tool is currently supported only for GitHub."
             if get_settings().config.publish_output:

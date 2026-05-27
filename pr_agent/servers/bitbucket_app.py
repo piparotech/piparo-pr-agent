@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -24,6 +25,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider
+from pr_agent.servers.async_utils import run_async_function_in_thread
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -51,7 +53,7 @@ async def get_bearer_token(shared_secret: str, client_key: str):
             'Authorization': f'JWT {token}',
             'Content-Type': 'application/x-www-form-urlencoded'
         }
-        response = requests.request("POST", url, headers=headers, data=payload)
+        response = await asyncio.to_thread(requests.request, "POST", url, headers=headers, data=payload)
         bearer_token = response.json()["access_token"]
         return bearer_token
     except Exception as e:
@@ -101,7 +103,7 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
             'Authorization': f'Bearer {bearer_token}',
             'Accept': 'application/json'
         }
-        response = requests.get(commits_api, headers=headers)
+        response = await asyncio.to_thread(requests.get, commits_api, headers=headers)
         if response.status_code != 200:
             get_logger().warning(f"Bitbucket commits API returned {response.status_code} for {commits_api}")
             return False
@@ -304,7 +306,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                         await agent.handle_request(pr_url, comment_body)
         except Exception as e:
             get_logger().error(f"Failed to handle webhook: {e}")
-    background_tasks.add_task(inner)
+    background_tasks.add_task(run_async_function_in_thread, inner)
     return "OK"
 
 @router.get("/webhook")

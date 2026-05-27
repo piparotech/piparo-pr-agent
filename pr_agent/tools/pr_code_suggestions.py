@@ -246,6 +246,9 @@ class PRCodeSuggestions:
         return pr_body
 
     async def publish_no_suggestions(self):
+        return await asyncio.to_thread(self._publish_no_suggestions_sync)
+
+    def _publish_no_suggestions_sync(self):
         pr_body = "## PR Code Suggestions ✨\n\nNo code suggestions found this time."
         pr_body += f"\n\n<sub>Last suggestions update: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}.</sub>"
         pr_body = append_ai_usage_footer(pr_body, self.ai_handler, "/improve", self.git_provider)
@@ -578,6 +581,9 @@ class PRCodeSuggestions:
         return data
 
     async def push_inline_code_suggestions(self, data):
+        return await asyncio.to_thread(self._push_inline_code_suggestions_sync, data)
+
+    def _push_inline_code_suggestions_sync(self, data):
         code_suggestions = []
 
         if not data['code_suggestions']:

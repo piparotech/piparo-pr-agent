@@ -12,6 +12,7 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.async_utils import run_async_function_off_loop
 
 setup_logger()
 router = APIRouter()
@@ -43,7 +44,8 @@ async def handle_gerrit_request(action: Action, item: Item):
                 status_code=400,
                 detail="msg is required for ask command"
             )
-    await PRAgent().handle_request(
+    await run_async_function_off_loop(
+        PRAgent().handle_request,
         f"{item.project}:{item.refspec}",
         f"/{item.msg.strip()}"
     )

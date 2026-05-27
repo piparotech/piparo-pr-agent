@@ -26,6 +26,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.async_utils import run_async_function_in_thread
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 security = HTTPBasic(auto_error=False)
@@ -174,7 +175,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     data = await request.json()
     # get_logger().info(json.dumps(data))
 
-    background_tasks.add_task(handle_request_azure, data, log_context)
+    background_tasks.add_task(run_async_function_in_thread, handle_request_azure, data, log_context)
 
     return JSONResponse(
         status_code=status.HTTP_202_ACCEPTED, content=jsonable_encoder({"message": "webhook triggered successfully"})
