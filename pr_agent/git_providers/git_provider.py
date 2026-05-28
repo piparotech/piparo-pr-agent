@@ -389,6 +389,13 @@ class GitProvider(ABC):
     def get_latest_commit_url(self) -> str:
         return ""
 
+    def publish_progress_status(self, context: str, description: str, target_url: str = None):
+        return None
+
+    def complete_progress_status(self, progress_status, description: str, success: bool = True,
+                                 target_url: str = None):
+        return None
+
     def auto_approve(self) -> bool:
         return False
 

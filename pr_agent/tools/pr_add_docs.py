@@ -15,6 +15,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            complete_progress_status,
+                                            publish_progress_status)
+
+PIPARO_ADD_DOCS_STATUS_SUCCESS = "Documentation suggestions ready"
+PIPARO_ADD_DOCS_STATUS_SKIPPED = "No documentation suggestions found"
 
 
 class PRAddDocs:
@@ -49,16 +55,20 @@ class PRAddDocs:
                                           get_settings().pr_add_docs_prompt.user)
 
     async def run(self):
+        progress_status = None
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
-                self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
+                progress_status = publish_progress_status(self.git_provider)
+                if not progress_status:
+                    self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
 
             get_logger().info('Preparing PR documentation...')
             await retry_with_fallback_models(self._prepare_prediction)
             data = self._prepare_pr_code_docs()
             if (not data) or (not 'Code Documentation' in data):
                 get_logger().info('No code documentation found for PR.')
+                complete_progress_status(self.git_provider, progress_status, PIPARO_ADD_DOCS_STATUS_SKIPPED)
                 return
 
             if get_settings().config.publish_output:
@@ -67,8 +77,15 @@ class PRAddDocs:
                 get_logger().info('Pushing inline code documentation...')
                 self.push_inline_docs(data)
                 publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/add_docs")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_ADD_DOCS_STATUS_SUCCESS,
+                    target_url=self.git_provider.get_pr_url(),
+                )
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
+            complete_progress_status(self.git_provider, progress_status, PIPARO_PROGRESS_STATUS_FAILURE, success=False)
 
     async def _prepare_prediction(self, model: str):
         get_logger().info('Getting PR diff...')

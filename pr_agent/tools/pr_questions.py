@@ -14,6 +14,12 @@ from pr_agent.git_providers import get_git_provider, GitLabProvider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            complete_progress_status,
+                                            get_response_url,
+                                            publish_progress_status)
+
+PIPARO_ASK_STATUS_SUCCESS = "Answer ready"
 
 
 class PRQuestions:
@@ -52,34 +58,48 @@ class PRQuestions:
         return question_str
 
     async def run(self):
-        get_logger().info(f'Answering a PR question about the PR {self.pr_url} ')
-        relevant_configs = {'pr_questions': dict(get_settings().pr_questions),
-                            'config': dict(get_settings().config)}
-        get_logger().debug("Relevant configs", artifacts=relevant_configs)
-        if get_settings().config.publish_output:
-            self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
+        progress_status = None
+        try:
+            get_logger().info(f'Answering a PR question about the PR {self.pr_url} ')
+            relevant_configs = {'pr_questions': dict(get_settings().pr_questions),
+                                'config': dict(get_settings().config)}
+            get_logger().debug("Relevant configs", artifacts=relevant_configs)
+            if get_settings().config.publish_output:
+                progress_status = publish_progress_status(self.git_provider)
+                if not progress_status:
+                    self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
 
-        # identify image
-        img_path = self.identify_image_in_comment()
-        if img_path:
-            get_logger().debug(f"Image path identified", artifact=img_path)
+            # identify image
+            img_path = self.identify_image_in_comment()
+            if img_path:
+                get_logger().debug(f"Image path identified", artifact=img_path)
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        pr_comment = self._prepare_pr_answer()
-        get_logger().debug(f"PR output", artifact=pr_comment)
+            pr_comment = self._prepare_pr_answer()
+            get_logger().debug(f"PR output", artifact=pr_comment)
 
-        if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
-            pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
-            pr_comment += HelpMessage.get_ask_usage_guide()
-            pr_comment += "\n</details>\n"
+            if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
+                pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                pr_comment += HelpMessage.get_ask_usage_guide()
+                pr_comment += "\n</details>\n"
 
-        if get_settings().config.publish_output:
-            pr_comment = append_ai_usage_footer(pr_comment, self.ai_handler, "/ask", self.git_provider)
-            self.git_provider.publish_comment(pr_comment)
-            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/ask")
-            self.git_provider.remove_initial_comment()
-        return ""
+            if get_settings().config.publish_output:
+                pr_comment = append_ai_usage_footer(pr_comment, self.ai_handler, "/ask", self.git_provider)
+                final_response = self.git_provider.publish_comment(pr_comment)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/ask")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_ASK_STATUS_SUCCESS,
+                    target_url=get_response_url(self.git_provider, final_response),
+                )
+                self.git_provider.remove_initial_comment()
+            return ""
+        except Exception as e:
+            get_logger().error(f"Failed to answer PR question, error: {e}")
+            complete_progress_status(self.git_provider, progress_status, PIPARO_PROGRESS_STATUS_FAILURE, success=False)
+            raise
 
     def identify_image_in_comment(self):
         img_path = ''

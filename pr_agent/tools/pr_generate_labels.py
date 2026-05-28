@@ -15,6 +15,13 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            complete_progress_status,
+                                            get_response_url,
+                                            publish_progress_status)
+
+PIPARO_LABELS_STATUS_SUCCESS = "Labels ready"
+PIPARO_LABELS_STATUS_SKIPPED = "No labels generated"
 
 
 class PRGenerateLabels:
@@ -70,8 +77,11 @@ class PRGenerateLabels:
 
         try:
             get_logger().info(f"Generating a PR labels {self.pr_id}")
+            progress_status = None
             if get_settings().config.publish_output:
-                self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
+                progress_status = publish_progress_status(self.git_provider)
+                if not progress_status:
+                    self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
 
             await retry_with_fallback_models(self._prepare_prediction)
 
@@ -79,6 +89,7 @@ class PRGenerateLabels:
             if self.prediction:
                 self._prepare_data()
             else:
+                complete_progress_status(self.git_provider, progress_status, PIPARO_LABELS_STATUS_SKIPPED)
                 return None
 
             pr_labels = self._prepare_labels()
@@ -90,6 +101,7 @@ class PRGenerateLabels:
                 user_labels = get_user_labels(current_labels)
                 pr_labels = pr_labels + user_labels
 
+                final_response = None
                 if self.git_provider.is_supported("get_labels"):
                     self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
@@ -97,11 +109,23 @@ class PRGenerateLabels:
                     pr_labels_text = f"## PR Labels:\n{value}\n"
                     pr_labels_text = append_ai_usage_footer(
                         pr_labels_text, self.ai_handler, "/labels", self.git_provider)
-                    self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
+                    final_response = self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
                 publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/labels")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_LABELS_STATUS_SUCCESS,
+                    target_url=get_response_url(self.git_provider, final_response) or self.git_provider.get_pr_url(),
+                )
                 self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
+            complete_progress_status(
+                self.git_provider,
+                locals().get("progress_status"),
+                PIPARO_PROGRESS_STATUS_FAILURE,
+                success=False,
+            )
 
         return ""
 

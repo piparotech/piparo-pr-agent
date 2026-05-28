@@ -559,6 +559,7 @@ Allowing you to automate the review process on your private or public repositori
    - Set the following permissions:
      - Pull requests: Read & write
      - Issue comment: Read & write
+     - Commit statuses: Read & write
      - Metadata: Read-only
      - Contents: Read-only
    - Set the following events:

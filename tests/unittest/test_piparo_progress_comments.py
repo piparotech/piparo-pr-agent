@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 from pr_agent.algo.utils import PRReviewHeader
 from pr_agent.tools.pr_code_suggestions import (
     PIPARO_SUGGESTIONS_PROGRESS_MARKER,
+    PIPARO_SUGGESTIONS_STATUS_CONTEXT,
+    PIPARO_SUGGESTIONS_STATUS_PENDING,
     PRCodeSuggestions,
 )
 from pr_agent.tools.pr_reviewer import PIPARO_REVIEW_PROGRESS_MARKER, PRReviewer
@@ -40,6 +42,31 @@ class FakeProvider:
                 self.edit_comment(comment, body)
                 return comment
         return self.publish_comment(body)
+
+
+class FakeStatusProvider(FakeProvider):
+    def __init__(self, comments=None):
+        super().__init__(comments)
+        self.statuses = []
+        self.completed_statuses = []
+
+    def get_pr_url(self):
+        return "https://github.com/acme/repo/pull/1"
+
+    def publish_progress_status(self, context, description, target_url=None):
+        status = {"context": context, "description": description, "target_url": target_url}
+        self.statuses.append(status)
+        return status
+
+    def complete_progress_status(self, progress_status, description, success=True, target_url=None):
+        status = {
+            "progress_status": progress_status,
+            "description": description,
+            "success": success,
+            "target_url": target_url,
+        }
+        self.completed_statuses.append(status)
+        return status
 
 
 class Settings(dict):
@@ -83,6 +110,43 @@ def test_suggestions_progress_does_not_delete_final_comment_on_error():
 
     assert final_comment in provider.comments
     assert progress_comment in provider.removed
+
+
+def test_suggestions_progress_uses_status_when_available():
+    provider = FakeStatusProvider()
+    tool = _make_code_suggestions(provider)
+
+    result = tool._publish_progress_status()
+
+    assert result == provider.statuses[0]
+    assert provider.statuses == [
+        {
+            "context": PIPARO_SUGGESTIONS_STATUS_CONTEXT,
+            "description": PIPARO_SUGGESTIONS_STATUS_PENDING,
+            "target_url": "https://github.com/acme/repo/pull/1",
+        }
+    ]
+    assert provider.published == []
+
+
+def test_suggestions_progress_status_can_be_completed():
+    provider = FakeStatusProvider()
+    tool = _make_code_suggestions(provider)
+    tool.progress_status = provider.publish_progress_status(
+        PIPARO_SUGGESTIONS_STATUS_CONTEXT,
+        PIPARO_SUGGESTIONS_STATUS_PENDING,
+    )
+
+    result = tool._complete_progress_status(
+        "Code suggestions ready",
+        target_url="https://github.com/acme/repo/pull/1#comment",
+    )
+
+    assert result == provider.completed_statuses[0]
+    assert provider.completed_statuses[0]["progress_status"] == tool.progress_status
+    assert provider.completed_statuses[0]["description"] == "Code suggestions ready"
+    assert provider.completed_statuses[0]["success"] is True
+    assert provider.completed_statuses[0]["target_url"] == "https://github.com/acme/repo/pull/1#comment"
 
 
 def test_reviewer_progress_uses_marker_without_overwriting_final_comment():
