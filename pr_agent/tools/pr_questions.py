@@ -21,6 +21,7 @@ from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
                                             publish_progress_status)
 
 PIPARO_ASK_STATUS_CONTEXT = build_progress_status_context("Ask")
+PIPARO_ASK_STATUS_PENDING = "Answer in progress"
 PIPARO_ASK_STATUS_SUCCESS = "Answer ready"
 
 
@@ -67,7 +68,11 @@ class PRQuestions:
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider, context=PIPARO_ASK_STATUS_CONTEXT)
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_ASK_STATUS_PENDING,
+                    context=PIPARO_ASK_STATUS_CONTEXT,
+                )
                 if not progress_status:
                     self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
 

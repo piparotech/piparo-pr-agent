@@ -21,6 +21,7 @@ from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
                                             publish_progress_status)
 
 PIPARO_ADD_DOCS_STATUS_CONTEXT = build_progress_status_context("Add Docs")
+PIPARO_ADD_DOCS_STATUS_PENDING = "Documentation suggestions in progress"
 PIPARO_ADD_DOCS_STATUS_SUCCESS = "Documentation suggestions ready"
 PIPARO_ADD_DOCS_STATUS_SKIPPED = "No documentation suggestions found"
 
@@ -61,7 +62,11 @@ class PRAddDocs:
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider, context=PIPARO_ADD_DOCS_STATUS_CONTEXT)
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_ADD_DOCS_STATUS_PENDING,
+                    context=PIPARO_ADD_DOCS_STATUS_CONTEXT,
+                )
                 if not progress_status:
                     self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
 

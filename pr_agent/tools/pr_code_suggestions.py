@@ -43,7 +43,7 @@ PIPARO_SUGGESTIONS_SUMMARY_NOTE = (
 )
 PIPARO_SUGGESTIONS_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:suggestions -->"
 PIPARO_SUGGESTIONS_STATUS_CONTEXT = build_progress_status_context("Code Suggestions")
-PIPARO_SUGGESTIONS_STATUS_PENDING = "Review in progress"
+PIPARO_SUGGESTIONS_STATUS_PENDING = "Code suggestions in progress"
 PIPARO_SUGGESTIONS_STATUS_SUCCESS = "Code suggestions ready"
 PIPARO_SUGGESTIONS_STATUS_NO_SUGGESTIONS = "No code suggestions found"
 PIPARO_SUGGESTIONS_STATUS_FAILURE = "Failed to generate code suggestions"

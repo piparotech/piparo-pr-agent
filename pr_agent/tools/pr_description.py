@@ -43,6 +43,7 @@ PIPARO_DESCRIPTION_NOTICE = (
     "Please review/edit as needed.\n\n"
 )
 PIPARO_DESCRIPTION_STATUS_CONTEXT = build_progress_status_context("Description")
+PIPARO_DESCRIPTION_STATUS_PENDING = "Description in progress"
 PIPARO_DESCRIPTION_STATUS_SUCCESS = "Description ready"
 PIPARO_DESCRIPTION_STATUS_SKIPPED = "No description generated"
 
@@ -117,7 +118,11 @@ class PRDescription:
             get_logger().debug("Relevant configs", artifact=relevant_configs)
             progress_status = None
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider, context=PIPARO_DESCRIPTION_STATUS_CONTEXT)
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_DESCRIPTION_STATUS_PENDING,
+                    context=PIPARO_DESCRIPTION_STATUS_CONTEXT,
+                )
                 if not progress_status and not get_settings().config.get('is_auto_command', False):
                     self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
 

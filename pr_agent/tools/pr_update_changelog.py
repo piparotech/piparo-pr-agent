@@ -24,6 +24,7 @@ from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
 
 CHANGELOG_LINES = 50
 PIPARO_CHANGELOG_STATUS_CONTEXT = build_progress_status_context("Changelog")
+PIPARO_CHANGELOG_STATUS_PENDING = "Changelog in progress"
 PIPARO_CHANGELOG_STATUS_SUCCESS = "Changelog ready"
 
 
@@ -82,7 +83,11 @@ class PRUpdateChangelog:
                 return
 
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider, context=PIPARO_CHANGELOG_STATUS_CONTEXT)
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_CHANGELOG_STATUS_PENDING,
+                    context=PIPARO_CHANGELOG_STATUS_CONTEXT,
+                )
                 if not progress_status:
                     self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
 
