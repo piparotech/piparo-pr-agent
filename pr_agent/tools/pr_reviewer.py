@@ -25,6 +25,7 @@ from pr_agent.git_providers.git_provider import (IncrementalPR,
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
                                             complete_progress_status,
                                             get_response_url,
                                             publish_progress_status)
@@ -39,6 +40,7 @@ PIPARO_COMMAND_HINT = (
     "or just `@piparo-agent <question or instruction>`."
 )
 PIPARO_REVIEW_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:review -->"
+PIPARO_REVIEW_STATUS_CONTEXT = build_progress_status_context("Review")
 PIPARO_REVIEW_STATUS_SUCCESS = "Review ready"
 PIPARO_REVIEW_STATUS_SKIPPED = "No review published"
 
@@ -170,7 +172,7 @@ class PRReviewer:
             review_header = f"{PRReviewHeader.REGULAR.value} 🔍"
             if (get_settings().config.publish_output and get_settings().config.publish_output_progress
                     and not self.incremental.is_incremental):
-                progress_status = publish_progress_status(self.git_provider)
+                progress_status = publish_progress_status(self.git_provider, context=PIPARO_REVIEW_STATUS_CONTEXT)
                 if not progress_status and get_settings().pr_reviewer.persistent_comment:
                     progress_response = self._publish_or_update_progress_comment(
                         f"{review_header}\n\n⏳ Reviewing this PR now. I’ll update this comment with the full review when I’m done."

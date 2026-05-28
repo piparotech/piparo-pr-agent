@@ -1,12 +1,17 @@
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
-PIPARO_PROGRESS_STATUS_CONTEXT = "piparo-pr-agent"
+PIPARO_PROGRESS_STATUS_CONTEXT_PREFIX = "piparo-pr-agent"
+PIPARO_PROGRESS_STATUS_CONTEXT = PIPARO_PROGRESS_STATUS_CONTEXT_PREFIX
 PIPARO_PROGRESS_STATUS_PENDING = "Review in progress"
 PIPARO_PROGRESS_STATUS_FAILURE = "Failed to process request"
 
 
-def publish_progress_status(git_provider, description: str = PIPARO_PROGRESS_STATUS_PENDING):
+def build_progress_status_context(name: str = "") -> str:
+    return f"{PIPARO_PROGRESS_STATUS_CONTEXT_PREFIX} / {name}" if name else PIPARO_PROGRESS_STATUS_CONTEXT_PREFIX
+
+
+def publish_progress_status(git_provider, description: str = PIPARO_PROGRESS_STATUS_PENDING, context: str = None):
     if not get_settings().config.publish_output_progress:
         return None
 
@@ -17,7 +22,7 @@ def publish_progress_status(git_provider, description: str = PIPARO_PROGRESS_STA
     try:
         get_pr_url = getattr(git_provider, "get_pr_url", None)
         target_url = get_pr_url() if callable(get_pr_url) else ""
-        return publish_status(PIPARO_PROGRESS_STATUS_CONTEXT, description, target_url=target_url)
+        return publish_status(context or PIPARO_PROGRESS_STATUS_CONTEXT, description, target_url=target_url)
     except Exception as e:
         get_logger().exception(f"Failed to publish progress status, error: {e}")
         return None

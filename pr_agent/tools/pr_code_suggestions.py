@@ -30,7 +30,7 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
-from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_CONTEXT,
+from pr_agent.tools.progress_status import (build_progress_status_context,
                                             complete_progress_status,
                                             get_response_url,
                                             publish_progress_status)
@@ -42,7 +42,7 @@ PIPARO_SUGGESTIONS_SUMMARY_NOTE = (
     "instead of spreading them across the diff."
 )
 PIPARO_SUGGESTIONS_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:suggestions -->"
-PIPARO_SUGGESTIONS_STATUS_CONTEXT = PIPARO_PROGRESS_STATUS_CONTEXT
+PIPARO_SUGGESTIONS_STATUS_CONTEXT = build_progress_status_context("Code Suggestions")
 PIPARO_SUGGESTIONS_STATUS_PENDING = "Review in progress"
 PIPARO_SUGGESTIONS_STATUS_SUCCESS = "Code suggestions ready"
 PIPARO_SUGGESTIONS_STATUS_NO_SUGGESTIONS = "No code suggestions found"
@@ -235,7 +235,11 @@ class PRCodeSuggestions:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
 
     def _publish_progress_status(self):
-        return publish_progress_status(self.git_provider, PIPARO_SUGGESTIONS_STATUS_PENDING)
+        return publish_progress_status(
+            self.git_provider,
+            PIPARO_SUGGESTIONS_STATUS_PENDING,
+            context=PIPARO_SUGGESTIONS_STATUS_CONTEXT,
+        )
 
     def _complete_progress_status(self, description: str, success: bool = True, target_url: str = None):
         return complete_progress_status(self.git_provider, self.progress_status, description,

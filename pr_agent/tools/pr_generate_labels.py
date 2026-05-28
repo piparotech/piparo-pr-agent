@@ -16,10 +16,12 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
                                             complete_progress_status,
                                             get_response_url,
                                             publish_progress_status)
 
+PIPARO_LABELS_STATUS_CONTEXT = build_progress_status_context("Labels")
 PIPARO_LABELS_STATUS_SUCCESS = "Labels ready"
 PIPARO_LABELS_STATUS_SKIPPED = "No labels generated"
 
@@ -79,7 +81,7 @@ class PRGenerateLabels:
             get_logger().info(f"Generating a PR labels {self.pr_id}")
             progress_status = None
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider)
+                progress_status = publish_progress_status(self.git_provider, context=PIPARO_LABELS_STATUS_CONTEXT)
                 if not progress_status:
                     self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
 

@@ -27,6 +27,7 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
                                             complete_progress_status,
                                             get_response_url,
                                             publish_progress_status)
@@ -41,6 +42,7 @@ PIPARO_DESCRIPTION_NOTICE = (
     "> This section was added by `@piparo-agent /describe` from the current diff. "
     "Please review/edit as needed.\n\n"
 )
+PIPARO_DESCRIPTION_STATUS_CONTEXT = build_progress_status_context("Description")
 PIPARO_DESCRIPTION_STATUS_SUCCESS = "Description ready"
 PIPARO_DESCRIPTION_STATUS_SKIPPED = "No description generated"
 
@@ -115,7 +117,7 @@ class PRDescription:
             get_logger().debug("Relevant configs", artifact=relevant_configs)
             progress_status = None
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider)
+                progress_status = publish_progress_status(self.git_provider, context=PIPARO_DESCRIPTION_STATUS_CONTEXT)
                 if not progress_status and not get_settings().config.get('is_auto_command', False):
                     self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
 

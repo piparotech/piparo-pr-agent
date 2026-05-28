@@ -16,9 +16,11 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
                                             complete_progress_status,
                                             publish_progress_status)
 
+PIPARO_ADD_DOCS_STATUS_CONTEXT = build_progress_status_context("Add Docs")
 PIPARO_ADD_DOCS_STATUS_SUCCESS = "Documentation suggestions ready"
 PIPARO_ADD_DOCS_STATUS_SKIPPED = "No documentation suggestions found"
 
@@ -59,7 +61,7 @@ class PRAddDocs:
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider)
+                progress_status = publish_progress_status(self.git_provider, context=PIPARO_ADD_DOCS_STATUS_CONTEXT)
                 if not progress_status:
                     self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
 

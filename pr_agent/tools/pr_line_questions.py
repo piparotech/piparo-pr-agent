@@ -19,9 +19,11 @@ from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
                                             complete_progress_status,
                                             publish_progress_status)
 
+PIPARO_LINE_ASK_STATUS_CONTEXT = build_progress_status_context("Ask Line")
 PIPARO_LINE_ASK_STATUS_SUCCESS = "Answer ready"
 PIPARO_LINE_ASK_STATUS_SKIPPED = "No answer generated"
 
@@ -65,7 +67,7 @@ class PR_LineQuestions:
         try:
             get_logger().info('Answering a PR lines question...')
             if get_settings().config.publish_output:
-                progress_status = publish_progress_status(self.git_provider)
+                progress_status = publish_progress_status(self.git_provider, context=PIPARO_LINE_ASK_STATUS_CONTEXT)
 
             # set conversation history if enabled
             # currently only supports GitHub provider
