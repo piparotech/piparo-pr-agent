@@ -398,15 +398,20 @@ class GithubProvider(GitProvider):
             return ""
         return description[:137] + "..." if len(description) > 140 else description
 
+    # How many recent commits to scan for an existing usage check before giving up. The check
+    # almost always lives on the head commit; the small look-back only covers the first command
+    # after a new push. Bounding it keeps API cost flat on long-lived PRs.
+    USAGE_CHECK_COMMIT_LOOKBACK = 3
+
     def get_total_usage_check_text(self, check_name: str) -> str:
         """Return the markdown body of the most recent usage check run on this PR (head first,
-        then older commits) so cumulative totals survive across commits."""
+        then a few older commits) so cumulative totals survive across commits."""
         commits = []
         if getattr(self, "last_commit_id", None) is not None:
             commits.append(self.last_commit_id)
         prior = list(self.pr_commits[:-1]) if getattr(self, "pr_commits", None) else []
         commits.extend(reversed(prior))
-        for commit in commits:
+        for commit in commits[:self.USAGE_CHECK_COMMIT_LOOKBACK]:
             try:
                 for run in commit.get_check_runs(check_name=check_name):
                     output = getattr(run, "output", None)

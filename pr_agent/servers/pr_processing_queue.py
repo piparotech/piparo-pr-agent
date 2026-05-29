@@ -57,6 +57,7 @@ class RedisPRProcessingQueue:
         self._workers: list[asyncio.Task] = []
         self._stop_event = asyncio.Event()
         self._worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
+        self._last_stats_log = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -187,6 +188,8 @@ class RedisPRProcessingQueue:
     async def _worker_loop(self, index: int):
         while not self._stop_event.is_set():
             try:
+                if index == 0:
+                    await self._maybe_log_stats()
                 claimed = await self.claim_next_job()
                 if not claimed:
                     await asyncio.sleep(self.poll_seconds)
@@ -197,6 +200,32 @@ class RedisPRProcessingQueue:
             except Exception as e:
                 get_logger().exception("PR queue worker failed", worker_index=index, error=str(e))
                 await asyncio.sleep(self.poll_seconds)
+
+    @property
+    def stats_log_seconds(self) -> float:
+        return max(0.0, float(get_settings().get("QUEUE.STATS_LOG_SECONDS", 30)))
+
+    async def queue_stats(self) -> Dict[str, Any]:
+        """Snapshot of backlog depth so a Redis stall / pile-up is visible in logs."""
+        now = time.time()
+        ready = await self.redis.zcard(self.ready_key)
+        active = await self.redis.zcard(self.active_key)
+        oldest = await self.redis.zrange(self.ready_key, 0, 0, withscores=True)
+        oldest_age = round(now - float(oldest[0][1]), 1) if oldest else 0.0
+        return {"ready": int(ready or 0), "active": int(active or 0), "oldest_ready_age_s": oldest_age}
+
+    async def _maybe_log_stats(self):
+        if self.stats_log_seconds <= 0:
+            return
+        now = time.monotonic()
+        if now - self._last_stats_log < self.stats_log_seconds:
+            return
+        self._last_stats_log = now
+        try:
+            stats = await self.queue_stats()
+            get_logger().info("PR queue stats", **stats)
+        except Exception as e:
+            get_logger().debug(f"Failed to collect PR queue stats: {e}")
 
     async def claim_next_job(self) -> Optional[ClaimedPRJob]:
         token = await self._acquire_lock()

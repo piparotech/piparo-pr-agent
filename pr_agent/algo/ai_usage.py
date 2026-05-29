@@ -17,6 +17,9 @@ TOTAL_USAGE_DATA_START = "<!-- pr-agent-ai-usage-total:data"
 TOTAL_USAGE_DATA_END = "-->"
 TOTAL_USAGE_MAX_RUNS = 25
 TOTAL_USAGE_CHECK_NAME = "PR-Agent token usage"
+# GitHub caps check-run output text at 65535 chars; stay below it with headroom and shed
+# per-call detail from the stored state before we hit the hard limit.
+TOTAL_USAGE_TEXT_SOFT_LIMIT = 60000
 
 
 @dataclass
@@ -29,6 +32,8 @@ class AiCallUsage:
     total_tokens: int
     finish_reason: str
     is_estimated: bool = False
+    cost_usd: float | None = None
+    duration_ms: float | None = None
 
 
 def record_ai_call_usage(
@@ -41,6 +46,7 @@ def record_ai_call_usage(
     output: str = "",
     finish_reason: str = "",
     thinking_level: str | None = None,
+    duration_ms: float | None = None,
 ) -> None:
     """Store usage for one model call on the AI handler instance."""
     prompt_tokens, completion_tokens, total_tokens, is_estimated = _extract_usage_tokens(
@@ -56,6 +62,8 @@ def record_ai_call_usage(
         total_tokens=total_tokens,
         finish_reason=str(finish_reason or ""),
         is_estimated=is_estimated,
+        cost_usd=_compute_cost_usd(model, prompt_tokens, completion_tokens),
+        duration_ms=float(duration_ms) if duration_ms is not None else None,
     )
 
     if not hasattr(ai_handler, "ai_usage_run_id"):
@@ -200,6 +208,63 @@ def split_provider_model(model: str) -> tuple[str, str]:
     return "unknown", model
 
 
+def _compute_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
+    """Best-effort USD cost from litellm's price map. Returns None for models litellm
+    doesn't know, so we never show a misleading number (and avoid litellm's noisy
+    unknown-provider logging by checking the price map before pricing)."""
+    try:
+        import litellm
+    except Exception:
+        return None
+    price_map = getattr(litellm, "model_cost", {}) or {}
+    name = str(model or "")
+    candidates = [name]
+    if "/" in name:
+        candidates.append(name.split("/", 1)[1])
+    for candidate in candidates:
+        if candidate and candidate in price_map:
+            try:
+                prompt_cost, completion_cost = litellm.cost_per_token(
+                    model=candidate,
+                    prompt_tokens=int(prompt_tokens or 0),
+                    completion_tokens=int(completion_tokens or 0),
+                )
+                return round(float((prompt_cost or 0) + (completion_cost or 0)), 6)
+            except Exception:
+                continue
+    return None
+
+
+def _sum_cost(calls: list[AiCallUsage]) -> float | None:
+    costs = [c.cost_usd for c in calls if c.cost_usd is not None]
+    return round(sum(costs), 6) if costs else None
+
+
+def _sum_duration_ms(calls: list[AiCallUsage]) -> float | None:
+    durations = [c.duration_ms for c in calls if c.duration_ms is not None]
+    return round(sum(durations), 1) if durations else None
+
+
+def _fmt_cost(value: Any) -> str:
+    try:
+        cost = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if cost <= 0:
+        return ""
+    return f"${cost:,.4f}" if cost < 1 else f"${cost:,.2f}"
+
+
+def _fmt_duration(ms: Any) -> str:
+    try:
+        millis = float(ms)
+    except (TypeError, ValueError):
+        return ""
+    if millis <= 0:
+        return ""
+    return f"{millis / 1000:,.1f}s" if millis >= 1000 else f"{int(millis)}ms"
+
+
 def _extract_usage_tokens(response: Any, model: str, system: str, user: str, output: str) -> tuple[int, int, int, bool]:
     usage = _extract_usage_object(response)
     prompt_tokens = _get_usage_value(usage, "prompt_tokens", "input_tokens")
@@ -292,11 +357,14 @@ def _strip_existing_run_usage(body: str) -> str:
 def _render_run_usage(command: str, calls: list[AiCallUsage], run_id: str, supports_details: bool) -> str:
     total_tokens = sum(call.total_tokens for call in calls)
     estimate_suffix = " ~" if any(call.is_estimated for call in calls) else ""
+    cost = _fmt_cost(_sum_cost(calls))
+    duration = _fmt_duration(_sum_duration_ms(calls))
+    extra = "".join(f" · {part}" for part in (cost, duration) if part)
     if len(calls) == 1 or not supports_details:
         call = calls[0]
         body = (
             f"<sub>AI run: `{command}` · {call.provider}/{call.model} · "
-            f"thinking {call.thinking_level} · tokens {total_tokens:,}{estimate_suffix}</sub>"
+            f"thinking {call.thinking_level} · tokens {total_tokens:,}{estimate_suffix}{extra}</sub>"
         )
     else:
         rows = [
@@ -310,7 +378,8 @@ def _render_run_usage(command: str, calls: list[AiCallUsage], run_id: str, suppo
                 f"{call.prompt_tokens:,} | {call.completion_tokens:,} | {row_total} |"
             )
         body = (
-            f"<details>\n<summary>🤖 AI usage for this run: {total_tokens:,}{estimate_suffix} tokens</summary>\n\n"
+            f"<details>\n<summary>🤖 AI usage for this run: {total_tokens:,}{estimate_suffix} tokens"
+            f"{extra}</summary>\n\n"
             + "\n".join(rows)
             + "\n\n</details>"
         )
@@ -343,8 +412,10 @@ def _normalize_total_usage_data(data: dict) -> dict:
         summary = {}
         data["summary"] = summary
     tokens_from_runs = sum(int(run.get("tokens", 0) or 0) for run in runs)
+    cost_from_runs = sum(float(run.get("cost_usd", 0) or 0) for run in runs)
     summary["run_count"] = max(int(summary.get("run_count", 0) or 0), len(runs))
     summary["tokens"] = max(int(summary.get("tokens", 0) or 0), tokens_from_runs)
+    summary["cost_usd"] = round(max(float(summary.get("cost_usd", 0) or 0), cost_from_runs), 6)
     return data
 
 
@@ -352,6 +423,9 @@ def _increment_total_usage_summary(data: dict, run_entry: dict) -> None:
     summary = data.setdefault("summary", {})
     summary["run_count"] = int(summary.get("run_count", 0) or 0) + 1
     summary["tokens"] = int(summary.get("tokens", 0) or 0) + int(run_entry.get("tokens", 0) or 0)
+    summary["cost_usd"] = round(
+        float(summary.get("cost_usd", 0) or 0) + float(run_entry.get("cost_usd", 0) or 0), 6
+    )
 
 
 def _compact_total_usage_data(data: dict, max_runs: int) -> dict:
@@ -383,6 +457,8 @@ def _build_run_entry(git_provider: Any, ai_handler: Any, command: str, calls: li
         "commit": commit,
         "models": _unique_models(calls),
         "tokens": sum(call.total_tokens for call in calls),
+        "cost_usd": _sum_cost(calls),
+        "duration_ms": _sum_duration_ms(calls),
         "estimated": any(call.is_estimated for call in calls),
         "calls": [asdict(call) for call in calls],
     }
@@ -407,24 +483,28 @@ def _render_total_usage_summary(data: dict) -> str:
         sum(int(run.get("tokens", 0) or 0) for run in runs),
     )
     total_runs = max(int(summary.get("run_count", 0) or 0), len(runs))
+    total_cost = _fmt_cost(summary.get("cost_usd"))
+    cost_note = f" · est. cost {total_cost}" if total_cost else ""
     retention_note = ""
     if total_runs > len(runs):
         retention_note = f"\n\nShowing the latest {len(runs)} of {total_runs} runs."
-    return f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}{retention_note}"
+    return f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}{cost_note}{retention_note}"
 
 
 def _render_total_usage_rows(data: dict) -> str:
     rows = [
-        "| Time (UTC) | Command | Commit | Model(s) | Tokens |",
-        "|---|---|---|---|---:|",
+        "| Time (UTC) | Command | Commit | Model(s) | Tokens | Cost | Time |",
+        "|---|---|---|---|---:|---:|---:|",
     ]
     for run in data.get("runs", []):
         tokens = int(run.get("tokens", 0) or 0)
         estimated = " ~" if run.get("estimated") else ""
         models = ", ".join(f"`{model}`" for model in run.get("models", []))
+        cost = _fmt_cost(run.get("cost_usd")) or "-"
+        duration = _fmt_duration(run.get("duration_ms")) or "-"
         rows.append(
             f"| {run.get('time_utc', '')} | `{run.get('command', '')}` | "
-            f"{run.get('commit', '') or '-'} | {models or '-'} | {tokens:,}{estimated} |"
+            f"{run.get('commit', '') or '-'} | {models or '-'} | {tokens:,}{estimated} | {cost} | {duration} |"
         )
     return "\n".join(rows)
 
@@ -434,14 +514,29 @@ def _render_hidden_usage_data(data: dict) -> str:
     return f"{TOTAL_USAGE_DATA_START}\n{hidden_data}\n{TOTAL_USAGE_DATA_END}"
 
 
+def _strip_call_detail(data: dict) -> dict:
+    """Drop per-call arrays from the stored state. Per-run totals (tokens/cost/duration)
+    are kept, so cumulative reporting stays correct — only the per-call breakdown is shed."""
+    slim = dict(data)
+    slim["runs"] = [{k: v for k, v in run.items() if k != "calls"} for run in data.get("runs", [])]
+    return slim
+
+
 def _render_total_usage_text(data: dict) -> str:
     # Body for the GitHub check-run output: headline carried by the check title, so just the
     # table plus the hidden state we read back on the next run.
-    return (
-        f"{_render_total_usage_summary(data)}\n\n"
-        f"{_render_total_usage_rows(data)}\n\n"
-        f"{_render_hidden_usage_data(data)}"
+    summary = _render_total_usage_summary(data)
+    rows = _render_total_usage_rows(data)
+    text = f"{summary}\n\n{rows}\n\n{_render_hidden_usage_data(data)}"
+    if len(text) <= TOTAL_USAGE_TEXT_SOFT_LIMIT:
+        return text
+    # Approaching GitHub's hard cap: shed per-call detail from the stored JSON so the next
+    # run can still parse it, rather than letting the state get silently truncated mid-JSON.
+    get_logger().warning(
+        "AI usage check text exceeds soft limit; dropping per-call detail from stored state",
+        text_length=len(text),
     )
+    return f"{summary}\n\n{rows}\n\n{_render_hidden_usage_data(_strip_call_detail(data))}"
 
 
 def _render_total_usage(data: dict) -> str:

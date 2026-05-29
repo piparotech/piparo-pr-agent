@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import os
+import time
 
 import litellm
 import openai
@@ -559,6 +560,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["api_key"] = litellm.api_key
 
                 # Get completion with automatic streaming detection
+                call_started = time.monotonic()
                 resp, finish_reason, response_obj = await self._get_completion(**kwargs)
 
             except openai.RateLimitError as e:
@@ -594,6 +596,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 output=resp,
                 finish_reason=finish_reason,
                 thinking_level=thinking_level,
+                duration_ms=(time.monotonic() - call_started) * 1000,
             )
 
             # for CLI debugging

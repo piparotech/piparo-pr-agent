@@ -103,6 +103,53 @@ def test_publish_total_usage_migrates_then_deletes_legacy_comment():
     assert provider.check["text"].count("old") == 1 and provider.check["text"].count("new") == 1
 
 
+def test_run_footer_includes_cost_and_latency():
+    handler = SimpleNamespace(
+        ai_usage_run_id="run-1",
+        ai_usage_calls=[
+            AiCallUsage("openai", "gpt-4o", "high", 1000, 500, 1500, "stop", False, 0.0325, 1234.0),
+        ],
+    )
+    out = append_ai_usage_footer("Body", handler, "/review", FakeProvider())
+    assert "$0.0325" in out
+    assert "1.2s" in out
+
+
+def test_total_usage_check_includes_cost_and_latency():
+    provider = FakeCheckProvider()
+    handler = SimpleNamespace(
+        ai_usage_run_id="c1",
+        ai_usage_calls=[
+            AiCallUsage("openai", "gpt-4o", "high", 1000, 500, 1500, "stop", False, 0.0325, 2000.0),
+        ],
+    )
+    publish_ai_usage_total_comment(provider, handler, "/review")
+    assert "est. cost $0.0325" in provider.check["summary"]
+    assert "| Cost |" in provider.check["text"]
+    assert "$0.0325" in provider.check["text"]
+    assert "2.0s" in provider.check["text"]
+
+
+def test_render_total_usage_text_sheds_call_detail_when_too_large():
+    from pr_agent.algo.ai_usage import (TOTAL_USAGE_DATA_START,
+                                        _render_total_usage_text)
+
+    big_calls = [{"provider": "openai", "model": "gpt-4o", "blob": "y" * 200} for _ in range(50)]
+    runs = [
+        {"run_id": f"r{i}", "time_utc": "t", "command": "/review", "commit": "c", "models": [],
+         "tokens": 10, "cost_usd": 0.01, "duration_ms": 100, "estimated": False, "calls": big_calls}
+        for i in range(40)
+    ]
+    data = {"runs": runs, "summary": {"run_count": 40, "tokens": 400, "cost_usd": 0.4}}
+
+    text = _render_total_usage_text(data)
+
+    assert len(text) <= 65535  # stays under GitHub's hard cap
+    hidden = text.split(TOTAL_USAGE_DATA_START, 1)[1]
+    assert '"calls"' not in hidden  # per-call detail shed, run totals preserved
+    assert '"tokens":10' in hidden
+
+
 def test_record_ai_call_usage_extracts_provider_model_thinking_level_and_tokens():
     handler = SimpleNamespace()
     response = {"usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}}
