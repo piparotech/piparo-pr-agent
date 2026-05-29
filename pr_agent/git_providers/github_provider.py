@@ -6,7 +6,7 @@ import re
 import time
 import traceback
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
@@ -397,6 +397,58 @@ class GithubProvider(GitProvider):
         if not description:
             return ""
         return description[:137] + "..." if len(description) > 140 else description
+
+    def get_total_usage_check_text(self, check_name: str) -> str:
+        """Return the markdown body of the most recent usage check run on this PR (head first,
+        then older commits) so cumulative totals survive across commits."""
+        commits = []
+        if getattr(self, "last_commit_id", None) is not None:
+            commits.append(self.last_commit_id)
+        prior = list(self.pr_commits[:-1]) if getattr(self, "pr_commits", None) else []
+        commits.extend(reversed(prior))
+        for commit in commits:
+            try:
+                for run in commit.get_check_runs(check_name=check_name):
+                    output = getattr(run, "output", None)
+                    text = getattr(output, "text", None) or getattr(output, "summary", None) or ""
+                    if text:
+                        return text
+            except Exception as e:
+                get_logger().debug(f"Failed to read usage check run, error: {e}")
+        return ""
+
+    def publish_total_usage_check(self, check_name: str, title: str, summary: str, text: str) -> bool:
+        """Create or update an informational (neutral) check run carrying the cumulative usage
+        report, replacing the previous standalone PR comment."""
+        if getattr(self, "last_commit_id", None) is None:
+            return False
+        output = {
+            "title": (title or check_name)[:255],
+            "summary": (summary or "")[:65535],
+            "text": (text or "")[:65535],
+        }
+        try:
+            existing = None
+            for run in self.last_commit_id.get_check_runs(check_name=check_name):
+                existing = run
+                break
+            completed_at = datetime.now(timezone.utc)
+            if existing is not None:
+                existing.edit(status="completed", conclusion="neutral",
+                              completed_at=completed_at, output=output)
+            else:
+                self._get_repo().create_check_run(
+                    name=check_name, head_sha=self.last_commit_id.sha,
+                    status="completed", conclusion="neutral",
+                    completed_at=completed_at, output=output,
+                )
+            return True
+        except GithubException as e:
+            get_logger().warning(f"Failed to publish AI usage check run, error: {e}")
+            return False
+        except Exception as e:
+            get_logger().exception(f"Failed to publish AI usage check run, error: {e}")
+            return False
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url

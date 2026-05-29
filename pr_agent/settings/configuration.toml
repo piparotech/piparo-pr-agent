@@ -28,8 +28,8 @@ skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
 response_language="en-US" # Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...)
 publish_ai_usage=true # Add provider/model/thinking-level/token usage to final AI comments.
-publish_ai_usage_total_comment=true # Maintain a single persistent PR comment with cumulative PR-Agent token usage.
-ai_usage_total_max_runs=25 # Keep this many detailed runs in the persistent AI usage comment; older runs stay in totals.
+publish_ai_usage_total_comment=true # Publish cumulative PR-Agent token usage. On GitHub this is a neutral check run; other providers fall back to a single persistent PR comment.
+ai_usage_total_max_runs=25 # Keep this many detailed runs in the cumulative AI usage report; older runs stay in totals.
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500

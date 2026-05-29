@@ -16,6 +16,7 @@ TOTAL_USAGE_HEADER = "## PR-Agent Usage 📊"
 TOTAL_USAGE_DATA_START = "<!-- pr-agent-ai-usage-total:data"
 TOTAL_USAGE_DATA_END = "-->"
 TOTAL_USAGE_MAX_RUNS = 25
+TOTAL_USAGE_CHECK_NAME = "PR-Agent token usage"
 
 
 @dataclass
@@ -93,29 +94,83 @@ def publish_ai_usage_total_comment(git_provider: Any, ai_handler: Any, command: 
     if not calls or not run_id:
         return
 
-    try:
-        comments = list(git_provider.get_issue_comments())
-    except Exception as e:
-        get_logger().debug(f"Skipping AI usage total comment; issue comments are unavailable: {e}")
-        return
+    if _supports_usage_check(git_provider):
+        _publish_total_usage_check(git_provider, ai_handler, command, calls, run_id)
+    else:
+        _publish_total_usage_comment(git_provider, ai_handler, command, calls, run_id)
 
-    existing_comment = None
-    existing_body = ""
-    for comment in comments:
-        body = _get_comment_body(comment)
-        if body.startswith(TOTAL_USAGE_HEADER) or TOTAL_USAGE_DATA_START in body:
-            existing_comment = comment
-            existing_body = body
-            break
 
+def _supports_usage_check(git_provider: Any) -> bool:
+    return callable(getattr(git_provider, "publish_total_usage_check", None)) and callable(
+        getattr(git_provider, "get_total_usage_check_text", None)
+    )
+
+
+def _accumulate_total_usage_data(
+    existing_body: str, git_provider: Any, ai_handler: Any, command: str, calls: list, run_id: str
+) -> dict:
     data = _normalize_total_usage_data(_load_total_usage_data(existing_body))
     run_ids = {run.get("run_id") for run in data.get("runs", [])}
     if run_id not in run_ids:
         run_entry = _build_run_entry(git_provider, ai_handler, command, calls)
         data.setdefault("runs", []).append(run_entry)
         _increment_total_usage_summary(data, run_entry)
-    data = _compact_total_usage_data(data, _get_total_usage_max_runs())
+    return _compact_total_usage_data(data, _get_total_usage_max_runs())
 
+
+def _find_legacy_usage_comment(git_provider: Any) -> tuple[Any, str]:
+    try:
+        comments = list(git_provider.get_issue_comments())
+    except Exception as e:
+        get_logger().debug(f"Issue comments unavailable for AI usage lookup: {e}")
+        return None, ""
+    for comment in comments:
+        body = _get_comment_body(comment)
+        if body.startswith(TOTAL_USAGE_HEADER) or TOTAL_USAGE_DATA_START in body:
+            return comment, body
+    return None, ""
+
+
+def _publish_total_usage_check(
+    git_provider: Any, ai_handler: Any, command: str, calls: list, run_id: str
+) -> None:
+    try:
+        existing_body = git_provider.get_total_usage_check_text(TOTAL_USAGE_CHECK_NAME) or ""
+    except Exception as e:
+        get_logger().debug(f"Failed to read existing AI usage check run: {e}")
+        existing_body = ""
+
+    # First run on a PR that still carries the legacy comment: migrate its history, then drop it.
+    legacy_comment = None
+    if TOTAL_USAGE_DATA_START not in existing_body:
+        legacy_comment, legacy_body = _find_legacy_usage_comment(git_provider)
+        if legacy_body:
+            existing_body = legacy_body
+
+    data = _accumulate_total_usage_data(existing_body, git_provider, ai_handler, command, calls, run_id)
+    summary = _render_total_usage_summary(data)
+    text = _render_total_usage_text(data)
+
+    try:
+        published = git_provider.publish_total_usage_check(
+            TOTAL_USAGE_CHECK_NAME, TOTAL_USAGE_CHECK_NAME, summary, text
+        )
+    except Exception as e:
+        get_logger().debug(f"Failed to publish AI usage check run: {e}")
+        return
+
+    if published and legacy_comment is not None:
+        try:
+            git_provider.remove_comment(legacy_comment)
+        except Exception as e:
+            get_logger().debug(f"Failed to remove legacy AI usage comment: {e}")
+
+
+def _publish_total_usage_comment(
+    git_provider: Any, ai_handler: Any, command: str, calls: list, run_id: str
+) -> None:
+    existing_comment, existing_body = _find_legacy_usage_comment(git_provider)
+    data = _accumulate_total_usage_data(existing_body, git_provider, ai_handler, command, calls, run_id)
     body = _render_total_usage(data)
     try:
         if existing_comment:
@@ -344,7 +399,7 @@ def _unique_models(calls: list[AiCallUsage]) -> list[str]:
     return models
 
 
-def _render_total_usage(data: dict) -> str:
+def _render_total_usage_summary(data: dict) -> str:
     runs = data.get("runs", [])
     summary = data.get("summary", {}) if isinstance(data.get("summary"), dict) else {}
     total_tokens = max(
@@ -352,11 +407,18 @@ def _render_total_usage(data: dict) -> str:
         sum(int(run.get("tokens", 0) or 0) for run in runs),
     )
     total_runs = max(int(summary.get("run_count", 0) or 0), len(runs))
+    retention_note = ""
+    if total_runs > len(runs):
+        retention_note = f"\n\nShowing the latest {len(runs)} of {total_runs} runs."
+    return f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}{retention_note}"
+
+
+def _render_total_usage_rows(data: dict) -> str:
     rows = [
         "| Time (UTC) | Command | Commit | Model(s) | Tokens |",
         "|---|---|---|---|---:|",
     ]
-    for run in runs:
+    for run in data.get("runs", []):
         tokens = int(run.get("tokens", 0) or 0)
         estimated = " ~" if run.get("estimated") else ""
         models = ", ".join(f"`{model}`" for model in run.get("models", []))
@@ -364,19 +426,32 @@ def _render_total_usage(data: dict) -> str:
             f"| {run.get('time_utc', '')} | `{run.get('command', '')}` | "
             f"{run.get('commit', '') or '-'} | {models or '-'} | {tokens:,}{estimated} |"
         )
+    return "\n".join(rows)
 
+
+def _render_hidden_usage_data(data: dict) -> str:
     hidden_data = json.dumps(data, sort_keys=True, separators=(",", ":"))
-    rows_text = "\n".join(rows)
-    retention_note = ""
-    if total_runs > len(runs):
-        retention_note = f"\n\nShowing the latest {len(runs)} of {total_runs} runs."
+    return f"{TOTAL_USAGE_DATA_START}\n{hidden_data}\n{TOTAL_USAGE_DATA_END}"
+
+
+def _render_total_usage_text(data: dict) -> str:
+    # Body for the GitHub check-run output: headline carried by the check title, so just the
+    # table plus the hidden state we read back on the next run.
+    return (
+        f"{_render_total_usage_summary(data)}\n\n"
+        f"{_render_total_usage_rows(data)}\n\n"
+        f"{_render_hidden_usage_data(data)}"
+    )
+
+
+def _render_total_usage(data: dict) -> str:
     return (
         f"{TOTAL_USAGE_HEADER}\n\n"
-        f"**Total tokens used by PR-Agent on this PR:** {total_tokens:,}{retention_note}\n\n"
+        f"{_render_total_usage_summary(data)}\n\n"
         "<details>\n<summary>Runs</summary>\n\n"
-        f"{rows_text}\n\n"
+        f"{_render_total_usage_rows(data)}\n\n"
         "</details>\n\n"
-        f"{TOTAL_USAGE_DATA_START}\n{hidden_data}\n{TOTAL_USAGE_DATA_END}"
+        f"{_render_hidden_usage_data(data)}"
     )
 
 
