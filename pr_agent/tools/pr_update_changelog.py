@@ -16,8 +16,16 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import GithubProvider, get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
+                                            complete_progress_status,
+                                            get_response_url,
+                                            publish_progress_status)
 
 CHANGELOG_LINES = 50
+PIPARO_CHANGELOG_STATUS_CONTEXT = build_progress_status_context("Changelog")
+PIPARO_CHANGELOG_STATUS_PENDING = "Changelog in progress"
+PIPARO_CHANGELOG_STATUS_SUCCESS = "Changelog ready"
 
 
 class PRUpdateChangelog:
@@ -54,46 +62,65 @@ class PRUpdateChangelog:
                                           get_settings().pr_update_changelog_prompt.user)
 
     async def run(self):
-        get_logger().info('Updating the changelog...')
-        relevant_configs = {'pr_update_changelog': dict(get_settings().pr_update_changelog),
-                            'config': dict(get_settings().config)}
-        get_logger().debug("Relevant configs", artifacts=relevant_configs)
+        progress_status = None
+        try:
+            get_logger().info('Updating the changelog...')
+            relevant_configs = {'pr_update_changelog': dict(get_settings().pr_update_changelog),
+                                'config': dict(get_settings().config)}
+            get_logger().debug("Relevant configs", artifacts=relevant_configs)
 
-        # check if the git provider supports pushing changelog changes
-        if get_settings().pr_update_changelog.push_changelog_changes and not hasattr(
-            self.git_provider, "create_or_update_pr_file"
-        ):
-            get_logger().error(
-                "Pushing changelog changes is not currently supported for this code platform"
-            )
-            if get_settings().config.publish_output:
-                self.git_provider.publish_comment(
+            # check if the git provider supports pushing changelog changes
+            if get_settings().pr_update_changelog.push_changelog_changes and not hasattr(
+                self.git_provider, "create_or_update_pr_file"
+            ):
+                get_logger().error(
                     "Pushing changelog changes is not currently supported for this code platform"
                 )
-            return
+                if get_settings().config.publish_output:
+                    self.git_provider.publish_comment(
+                        "Pushing changelog changes is not currently supported for this code platform"
+                    )
+                return
 
-        if get_settings().config.publish_output:
-            self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
+            if get_settings().config.publish_output:
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_CHANGELOG_STATUS_PENDING,
+                    context=PIPARO_CHANGELOG_STATUS_CONTEXT,
+                )
+                if not progress_status:
+                    self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        new_file_content, answer = self._prepare_changelog_update()
+            new_file_content, answer = self._prepare_changelog_update()
 
-        # Output the relevant configurations if enabled
-        if get_settings().get('config', {}).get('output_relevant_configurations', False):
-            answer += show_relevant_configurations(relevant_section='pr_update_changelog')
+            # Output the relevant configurations if enabled
+            if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                answer += show_relevant_configurations(relevant_section='pr_update_changelog')
 
-        get_logger().debug(f"PR output", artifact=answer)
+            get_logger().debug(f"PR output", artifact=answer)
 
-        if get_settings().config.publish_output:
-            self.git_provider.remove_initial_comment()
-            if self.commit_changelog:
-                self._push_changelog_update(new_file_content, answer)
-            else:
-                body = append_ai_usage_footer(f"**Changelog updates:** 🔄\n\n{answer}", self.ai_handler,
-                                              "/update_changelog", self.git_provider)
-                self.git_provider.publish_comment(body)
-            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/update_changelog")
+            if get_settings().config.publish_output:
+                self.git_provider.remove_initial_comment()
+                final_response = None
+                if self.commit_changelog:
+                    self._push_changelog_update(new_file_content, answer)
+                else:
+                    body = append_ai_usage_footer(f"**Changelog updates:** 🔄\n\n{answer}", self.ai_handler,
+                                                  "/update_changelog", self.git_provider)
+                    final_response = self.git_provider.publish_comment(body)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/update_changelog")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_CHANGELOG_STATUS_SUCCESS,
+                    target_url=get_response_url(self.git_provider, final_response) or self.git_provider.get_pr_url(),
+                )
+        except Exception as e:
+            get_logger().error(f"Failed to update changelog, error: {e}")
+            complete_progress_status(self.git_provider, progress_status, PIPARO_PROGRESS_STATUS_FAILURE, success=False)
+            raise
 
     async def _prepare_prediction(self, model: str):
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)

@@ -26,6 +26,11 @@ from pr_agent.git_providers import (GithubProvider, get_git_provider,
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
+                                            complete_progress_status,
+                                            get_response_url,
+                                            publish_progress_status)
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets, extract_ticket_links_from_pr_description,
     extract_tickets)
@@ -37,6 +42,10 @@ PIPARO_DESCRIPTION_NOTICE = (
     "> This section was added by `@piparo-agent /describe` from the current diff. "
     "Please review/edit as needed.\n\n"
 )
+PIPARO_DESCRIPTION_STATUS_CONTEXT = build_progress_status_context("Description")
+PIPARO_DESCRIPTION_STATUS_PENDING = "Description in progress"
+PIPARO_DESCRIPTION_STATUS_SUCCESS = "Description ready"
+PIPARO_DESCRIPTION_STATUS_SKIPPED = "No description generated"
 
 
 class PRDescription:
@@ -107,8 +116,15 @@ class PRDescription:
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifact=relevant_configs)
-            if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
+            progress_status = None
+            if get_settings().config.publish_output:
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_DESCRIPTION_STATUS_PENDING,
+                    context=PIPARO_DESCRIPTION_STATUS_CONTEXT,
+                )
+                if not progress_status and not get_settings().config.get('is_auto_command', False):
+                    self.git_provider.publish_comment("Preparing PR description...", is_temporary=True)
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
@@ -119,6 +135,7 @@ class PRDescription:
                 self._prepare_data()
             else:
                 get_logger().warning(f"Empty prediction, PR: {self.pr_id}")
+                complete_progress_status(self.git_provider, progress_status, PIPARO_DESCRIPTION_STATUS_SKIPPED)
                 self.git_provider.remove_initial_comment()
                 return None
 
@@ -181,18 +198,21 @@ class PRDescription:
                         get_logger().debug(f"Labels are the same, not updating")
 
                 # publish description
+                final_response = None
                 if get_settings().pr_description.publish_description_as_comment:
                     full_markdown_description = f"## Title\n\n{pr_title.strip()}\n\n___\n{pr_body}"
                     full_markdown_description = append_ai_usage_footer(
                         full_markdown_description, self.ai_handler, "/describe", self.git_provider)
                     if get_settings().pr_description.publish_description_as_comment_persistent:
-                        self.git_provider.publish_persistent_comment(full_markdown_description,
-                                                                     initial_header="## Title",
-                                                                     update_header=True,
-                                                                     name="describe",
-                                                                     final_update_message=False, )
+                        final_response = self.git_provider.publish_persistent_comment(
+                            full_markdown_description,
+                            initial_header="## Title",
+                            update_header=True,
+                            name="describe",
+                            final_update_message=False,
+                        )
                     else:
-                        self.git_provider.publish_comment(full_markdown_description)
+                        final_response = self.git_provider.publish_comment(full_markdown_description)
                 else:
                     self.git_provider.publish_description(pr_title.strip(), pr_body)
 
@@ -202,8 +222,14 @@ class PRDescription:
                         if latest_commit_url:
                             pr_url = self.git_provider.get_pr_url()
                             update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
-                            self.git_provider.publish_comment(update_comment)
+                            final_response = self.git_provider.publish_comment(update_comment)
                 publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/describe")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_DESCRIPTION_STATUS_SUCCESS,
+                    target_url=get_response_url(self.git_provider, final_response) or self.git_provider.get_pr_url(),
+                )
                 self.git_provider.remove_initial_comment()
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
@@ -212,6 +238,12 @@ class PRDescription:
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
+            complete_progress_status(
+                self.git_provider,
+                locals().get("progress_status"),
+                PIPARO_PROGRESS_STATUS_FAILURE,
+                success=False,
+            )
 
         return ""
 

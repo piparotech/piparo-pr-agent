@@ -358,6 +358,46 @@ class GithubProvider(GitProvider):
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
 
+    def publish_progress_status(self, context: str, description: str, target_url: str = None):
+        return self._publish_commit_status("pending", context, description, target_url)
+
+    def complete_progress_status(self, progress_status, description: str, success: bool = True,
+                                 target_url: str = None):
+        if not progress_status:
+            return None
+        context = progress_status.get("context") if isinstance(progress_status, dict) else None
+        context = context or getattr(progress_status, "context", None)
+        if not context:
+            return None
+        if isinstance(progress_status, dict):
+            target_url = target_url or progress_status.get("target_url")
+        state = "success" if success else "failure"
+        return self._publish_commit_status(state, context, description, target_url)
+
+    def _publish_commit_status(self, state: str, context: str, description: str, target_url: str = None):
+        try:
+            target_url = target_url or self.get_pr_url()
+            description = self._limit_commit_status_description(description)
+            response = self.last_commit_id.create_status(
+                state=state,
+                target_url=target_url,
+                description=description,
+                context=context,
+            )
+            return {"context": context, "target_url": target_url, "response": response}
+        except GithubException as e:
+            get_logger().warning(f"Failed to publish GitHub commit status, error: {e}")
+            return None
+        except Exception as e:
+            get_logger().exception(f"Failed to publish GitHub commit status, error: {e}")
+            return None
+
+    @staticmethod
+    def _limit_commit_status_description(description: str) -> str:
+        if not description:
+            return ""
+        return description[:137] + "..." if len(description) > 140 else description
+
     def get_comment_url(self, comment) -> str:
         return comment.html_url
 

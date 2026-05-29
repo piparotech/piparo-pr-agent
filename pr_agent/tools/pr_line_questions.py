@@ -18,6 +18,16 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.progress_status import (PIPARO_PROGRESS_STATUS_FAILURE,
+                                            build_progress_status_context,
+                                            complete_progress_status,
+                                            publish_progress_status)
+
+PIPARO_LINE_ASK_STATUS_CONTEXT = build_progress_status_context("Ask Line")
+PIPARO_LINE_ASK_STATUS_PENDING = "Answer in progress"
+PIPARO_LINE_ASK_STATUS_SUCCESS = "Answer ready"
+PIPARO_LINE_ASK_STATUS_SKIPPED = "No answer generated"
+
 
 class PR_LineQuestions:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -54,55 +64,76 @@ class PR_LineQuestions:
 
 
     async def run(self):
-        get_logger().info('Answering a PR lines question...')
-        # if get_settings().config.publish_output:
-        #     self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
+        progress_status = None
+        try:
+            get_logger().info('Answering a PR lines question...')
+            if get_settings().config.publish_output:
+                progress_status = publish_progress_status(
+                    self.git_provider,
+                    PIPARO_LINE_ASK_STATUS_PENDING,
+                    context=PIPARO_LINE_ASK_STATUS_CONTEXT,
+                )
 
-        # set conversation history if enabled
-        # currently only supports GitHub provider
-        if get_settings().pr_questions.use_conversation_history and isinstance(self.git_provider, GithubProvider):
-            conversation_history = self._load_conversation_history()
-            self.vars["conversation_history"] = conversation_history
+            # set conversation history if enabled
+            # currently only supports GitHub provider
+            if get_settings().pr_questions.use_conversation_history and isinstance(self.git_provider, GithubProvider):
+                conversation_history = self._load_conversation_history()
+                self.vars["conversation_history"] = conversation_history
 
-        self.patch_with_lines = ""
-        ask_diff = get_settings().get('ask_diff_hunk', "")
-        line_start = get_settings().get('line_start', '')
-        line_end = get_settings().get('line_end', '')
-        side = get_settings().get('side', 'RIGHT')
-        file_name = get_settings().get('file_name', '')
-        comment_id = get_settings().get('comment_id', '')
-        if ask_diff:
-            self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,
-                                                                                       file_name,
-                                                                                       line_start=line_start,
-                                                                                       line_end=line_end,
-                                                                                       side=side
-                                                                                       )
-        else:
-            diff_files = self.git_provider.get_diff_files()
-            for file in diff_files:
-                if file.filename == file_name:
-                    self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch, file.filename,
-                                                                                               line_start=line_start,
-                                                                                               line_end=line_end,
-                                                                                               side=side)
-        if self.patch_with_lines:
-            model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
-            # sanitize the answer so that no line will start with "/"
-            model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")
-            if model_answer_sanitized.startswith("/"):
-                model_answer_sanitized = " " + model_answer_sanitized
-
-            get_logger().info('Preparing answer...')
-            model_answer_sanitized = append_ai_usage_footer(
-                model_answer_sanitized, self.ai_handler, "/ask", self.git_provider)
-            if comment_id:
-                self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
+            self.patch_with_lines = ""
+            ask_diff = get_settings().get('ask_diff_hunk', "")
+            line_start = get_settings().get('line_start', '')
+            line_end = get_settings().get('line_end', '')
+            side = get_settings().get('side', 'RIGHT')
+            file_name = get_settings().get('file_name', '')
+            comment_id = get_settings().get('comment_id', '')
+            if ask_diff:
+                self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(ask_diff,
+                                                                                           file_name,
+                                                                                           line_start=line_start,
+                                                                                           line_end=line_end,
+                                                                                           side=side
+                                                                                           )
             else:
-                self.git_provider.publish_comment(model_answer_sanitized)
-            publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/ask")
+                diff_files = self.git_provider.get_diff_files()
+                for file in diff_files:
+                    if file.filename == file_name:
+                        self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(
+                            file.patch,
+                            file.filename,
+                            line_start=line_start,
+                            line_end=line_end,
+                            side=side,
+                        )
+            if self.patch_with_lines:
+                model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
+                # sanitize the answer so that no line will start with "/"
+                model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")
+                if model_answer_sanitized.startswith("/"):
+                    model_answer_sanitized = " " + model_answer_sanitized
 
-        return ""
+                get_logger().info('Preparing answer...')
+                model_answer_sanitized = append_ai_usage_footer(
+                    model_answer_sanitized, self.ai_handler, "/ask", self.git_provider)
+                if comment_id:
+                    self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
+                else:
+                    self.git_provider.publish_comment(model_answer_sanitized)
+                publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/ask")
+                complete_progress_status(
+                    self.git_provider,
+                    progress_status,
+                    PIPARO_LINE_ASK_STATUS_SUCCESS,
+                    target_url=self.git_provider.get_pr_url(),
+                )
+            else:
+                complete_progress_status(self.git_provider, progress_status, PIPARO_LINE_ASK_STATUS_SKIPPED)
+
+            return ""
+        except Exception as e:
+            get_logger().error(f"Failed to answer PR line question, error: {e}")
+            complete_progress_status(self.git_provider, progress_status, PIPARO_PROGRESS_STATUS_FAILURE, success=False)
+            raise
         
     def _load_conversation_history(self) -> str:
         """Generate conversation history from the code review thread

@@ -30,6 +30,10 @@ from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
+from pr_agent.tools.progress_status import (build_progress_status_context,
+                                            complete_progress_status,
+                                            get_response_url,
+                                            publish_progress_status)
 
 
 PIPARO_SUGGESTIONS_SUMMARY_NOTE = (
@@ -38,6 +42,11 @@ PIPARO_SUGGESTIONS_SUMMARY_NOTE = (
     "instead of spreading them across the diff."
 )
 PIPARO_SUGGESTIONS_PROGRESS_MARKER = "<!-- piparo-pr-agent:progress:suggestions -->"
+PIPARO_SUGGESTIONS_STATUS_CONTEXT = build_progress_status_context("Code Suggestions")
+PIPARO_SUGGESTIONS_STATUS_PENDING = "Code suggestions in progress"
+PIPARO_SUGGESTIONS_STATUS_SUCCESS = "Code suggestions ready"
+PIPARO_SUGGESTIONS_STATUS_NO_SUGGESTIONS = "No code suggestions found"
+PIPARO_SUGGESTIONS_STATUS_FAILURE = "Failed to generate code suggestions"
 
 
 class PRCodeSuggestions:
@@ -98,6 +107,7 @@ class PRCodeSuggestions:
 
         self.progress = build_progress_comment()
         self.progress_response = None
+        self.progress_status = None
 
     async def run(self):
         try:
@@ -110,18 +120,20 @@ class PRCodeSuggestions:
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
 
-            # Publish or update a dedicated progress comment. The marker keeps it separate from final output.
+            # Prefer a GitHub commit status for progress. Fall back to the old progress comment if unavailable.
             if get_settings().config.publish_output and get_settings().config.publish_output_progress:
-                progress_body = (
-                    "## PR Code Suggestions ✨\n\n"
-                    "⏳ Looking through the changed code now. I’ll update this comment with suggestions when I’m done."
-                )
-                if self.git_provider.is_supported("gfm_markdown"):
-                    self.progress_response = self._publish_or_update_progress_comment(progress_body)
-                else:
-                    self.progress_response = self.git_provider.publish_comment(
-                        "Preparing suggestions...", is_temporary=True
+                self.progress_status = self._publish_progress_status()
+                if not self.progress_status:
+                    progress_body = (
+                        "## PR Code Suggestions ✨\n\n"
+                        "⏳ Looking through the changed code now. I’ll update this comment with suggestions when I’m done."
                     )
+                    if self.git_provider.is_supported("gfm_markdown"):
+                        self.progress_response = self._publish_or_update_progress_comment(progress_body)
+                    else:
+                        self.progress_response = self.git_provider.publish_comment(
+                            "Preparing suggestions...", is_temporary=True
+                        )
 
             # # call the model to get the suggestions, and self-reflect on them
             # if not self.is_extended:
@@ -170,29 +182,38 @@ class PRCodeSuggestions:
                     pr_body = append_ai_usage_footer(pr_body, self.ai_handler, "/improve", self.git_provider)
 
                     # publish the PR comment
+                    final_response = None
                     if get_settings().pr_code_suggestions.persistent_comment: # true by default
-                        self.publish_persistent_comment_with_history(self.git_provider,
-                                                                     pr_body,
-                                                                     initial_header="## PR Code Suggestions ✨",
-                                                                     update_header=True,
-                                                                     name="suggestions",
-                                                                     final_update_message=False,
-                                                                     max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
-                                                                     progress_response=self.progress_response)
+                        final_response = self.publish_persistent_comment_with_history(
+                            self.git_provider,
+                            pr_body,
+                            initial_header="## PR Code Suggestions ✨",
+                            update_header=True,
+                            name="suggestions",
+                            final_update_message=False,
+                            max_previous_comments=get_settings().pr_code_suggestions.max_history_len,
+                            progress_response=self.progress_response,
+                        )
                     else:
                         if self.progress_response:
                             self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                            final_response = self.progress_response
                         else:
-                            self.git_provider.publish_comment(pr_body)
+                            final_response = self.git_provider.publish_comment(pr_body)
 
                     publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
 
                     # dual publishing mode
                     if int(get_settings().pr_code_suggestions.dual_publishing_score_threshold) > 0:
                         await self.dual_publishing(data)
+                    self._complete_progress_status(
+                        PIPARO_SUGGESTIONS_STATUS_SUCCESS,
+                        target_url=self._get_response_url(final_response),
+                    )
                 else:
                     await self.push_inline_code_suggestions(data)
                     publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
+                    self._complete_progress_status(PIPARO_SUGGESTIONS_STATUS_SUCCESS)
                     self._remove_progress_comment()
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
@@ -203,6 +224,7 @@ class PRCodeSuggestions:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
+                self._complete_progress_status(PIPARO_SUGGESTIONS_STATUS_FAILURE, success=False)
                 if self.progress_response:
                     self._remove_progress_comment()
                 else:
@@ -211,6 +233,20 @@ class PRCodeSuggestions:
                         self.git_provider.publish_comment(f"Failed to generate code suggestions for PR")
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
+
+    def _publish_progress_status(self):
+        return publish_progress_status(
+            self.git_provider,
+            PIPARO_SUGGESTIONS_STATUS_PENDING,
+            context=PIPARO_SUGGESTIONS_STATUS_CONTEXT,
+        )
+
+    def _complete_progress_status(self, description: str, success: bool = True, target_url: str = None):
+        return complete_progress_status(self.git_provider, self.progress_status, description,
+                                        success=success, target_url=target_url)
+
+    def _get_response_url(self, response) -> str:
+        return get_response_url(self.git_provider, response)
 
     def _publish_or_update_progress_comment(self, body: str):
         progress_body = f"{PIPARO_SUGGESTIONS_PROGRESS_MARKER}\n{body}"
@@ -256,13 +292,20 @@ class PRCodeSuggestions:
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning('No code suggestions found for the PR.')
             get_logger().debug(f"PR output", artifact=pr_body)
+            final_response = None
             if self.progress_response:
                 self.git_provider.edit_comment(self.progress_response, body=pr_body)
+                final_response = self.progress_response
             else:
-                self.git_provider.publish_comment(pr_body)
+                final_response = self.git_provider.publish_comment(pr_body)
             publish_ai_usage_total_comment(self.git_provider, self.ai_handler, "/improve")
+            self._complete_progress_status(
+                PIPARO_SUGGESTIONS_STATUS_NO_SUGGESTIONS,
+                target_url=self._get_response_url(final_response),
+            )
         else:
             get_settings().data = {"artifact": ""}
+            self._complete_progress_status(PIPARO_SUGGESTIONS_STATUS_NO_SUGGESTIONS)
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}
