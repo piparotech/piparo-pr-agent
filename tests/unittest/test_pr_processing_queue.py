@@ -228,6 +228,46 @@ async def test_redis_queue_runs_claimed_job_off_web_event_loop(queue_settings):
     assert await queue.redis.llen(queue.jobs_key(claimed.job.pr_hash)) == 0
 
 
+@pytest.mark.asyncio
+async def test_redis_queue_profiles_and_recycles_worker_after_finished_job(queue_settings, monkeypatch):
+    from pr_agent.servers import pr_processing_queue
+
+    async def runner(job):
+        return None
+
+    snapshots = []
+    recycled = []
+    monkeypatch.setenv("PR_AGENT_RECYCLE_WORKER_AFTER_JOBS", "1")
+    monkeypatch.setenv("PR_AGENT_RECYCLE_WORKER_DELAY_SECONDS", "0")
+    monkeypatch.setattr(
+        pr_processing_queue.memory_profiler,
+        "log_snapshot",
+        lambda label, **context: snapshots.append((label, context)),
+    )
+    monkeypatch.setattr(pr_processing_queue, "_terminate_current_process", lambda: recycled.append(True))
+
+    queue = RedisPRProcessingQueue(runner=runner)
+    queue.redis = FakeRedis()
+    await _enqueue(queue, "https://api.github.com/repos/org/repo/pulls/1")
+    claimed = await queue.claim_next_job()
+    await queue._run_claimed_job(claimed)
+    await asyncio.sleep(0.01)
+
+    assert await queue.redis.llen(queue.jobs_key(claimed.job.pr_hash)) == 0
+    assert snapshots == [
+        (
+            "queue_job_finished",
+            {
+                "pr_url": claimed.job.pr_url,
+                "event": claimed.job.event,
+                "job_id": claimed.job.id,
+                "jobs_since_worker_start": 1,
+            },
+        )
+    ]
+    assert recycled == [True]
+
+
 def test_get_github_pr_url_extracts_supported_payload_shapes():
     assert get_github_pr_url({"pull_request": {"url": "pr-url"}}) == "pr-url"
     assert get_github_pr_url({"issue": {"pull_request": {"url": "issue-pr-url"}}}) == "issue-pr-url"

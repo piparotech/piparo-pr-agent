@@ -22,6 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers import memory_profiler
 from pr_agent.servers.async_utils import run_async_function_in_thread, run_async_function_off_loop
 from pr_agent.servers.pr_processing_queue import (get_github_pr_url,
                                                    get_pr_processing_queue)
@@ -465,6 +466,7 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def start_pr_processing_queue():
+    memory_profiler.start()
     await get_pr_processing_queue().start()
 
 

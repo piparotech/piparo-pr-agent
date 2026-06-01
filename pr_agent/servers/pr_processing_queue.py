@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import socket
 import time
 import uuid
@@ -13,6 +14,7 @@ from starlette_context import request_cycle_context
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
+from pr_agent.servers import memory_profiler
 from pr_agent.servers.async_utils import run_async_function_off_loop
 
 
@@ -58,6 +60,8 @@ class RedisPRProcessingQueue:
         self._stop_event = asyncio.Event()
         self._worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex}"
         self._last_stats_log = 0.0
+        self._jobs_since_worker_start = 0
+        self._worker_recycle_scheduled = False
 
     @property
     def enabled(self) -> bool:
@@ -307,6 +311,15 @@ class RedisPRProcessingQueue:
             await asyncio.gather(heartbeat, return_exceptions=True)
             if should_finish:
                 await self.finish_job(claimed)
+                self._jobs_since_worker_start += 1
+                memory_profiler.log_snapshot(
+                    "queue_job_finished",
+                    pr_url=claimed.job.pr_url,
+                    event=claimed.job.event,
+                    job_id=claimed.job.id,
+                    jobs_since_worker_start=self._jobs_since_worker_start,
+                )
+                self._maybe_recycle_worker_after_job(claimed)
 
     @property
     def finish_lock_wait_seconds(self) -> float:
@@ -364,6 +377,48 @@ class RedisPRProcessingQueue:
 
     async def _release_lock(self, token: str):
         await self.redis.eval(_RELEASE_LOCK_SCRIPT, 1, self.lock_key, token)
+
+    @property
+    def worker_recycle_after_jobs(self) -> int:
+        value = os.getenv(
+            "PR_AGENT_RECYCLE_WORKER_AFTER_JOBS", get_settings().get("QUEUE.WORKER_RECYCLE_AFTER_JOBS", 0)
+        )
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            get_logger().warning("Invalid PR-Agent worker recycle threshold", value=value)
+            return 0
+
+    @property
+    def worker_recycle_delay_seconds(self) -> float:
+        value = os.getenv("PR_AGENT_RECYCLE_WORKER_DELAY_SECONDS", "2")
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            get_logger().warning("Invalid PR-Agent worker recycle delay", value=value)
+            return 2.0
+
+    def _maybe_recycle_worker_after_job(self, claimed: ClaimedPRJob):
+        threshold = self.worker_recycle_after_jobs
+        if threshold <= 0 or self._worker_recycle_scheduled or self._jobs_since_worker_start < threshold:
+            return
+        self._worker_recycle_scheduled = True
+        delay = self.worker_recycle_delay_seconds
+        get_logger().warning(
+            "Recycling PR-Agent worker after queued jobs",
+            pr_url=claimed.job.pr_url,
+            event=claimed.job.event,
+            job_id=claimed.job.id,
+            jobs_since_worker_start=self._jobs_since_worker_start,
+            recycle_after_jobs=threshold,
+            recycle_delay_seconds=delay,
+        )
+        asyncio.get_running_loop().call_later(delay, _terminate_current_process)
+
+
+def _terminate_current_process():
+    get_logger().warning("Terminating PR-Agent worker for recycle", pid=os.getpid())
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 async def run_github_webhook_job(job: QueuedPRJob):
