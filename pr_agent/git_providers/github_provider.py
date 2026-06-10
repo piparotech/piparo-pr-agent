@@ -6,12 +6,13 @@ import re
 import time
 import traceback
 import json
+import tomllib
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 from urllib.parse import urlparse
 
 from github.Issue import Issue
-from github import AppAuthentication, Auth, Github, GithubException
+from github import AppAuthentication, Auth, Github, GithubException, GithubIntegration
 from retry import retry
 from starlette_context import context
 
@@ -836,6 +837,107 @@ class GithubProvider(GitProvider):
             return contents
         except Exception:
             return ""
+
+    def get_global_repo_settings(self):
+        """Read organization-wide PR-Agent settings from the configured global settings repository."""
+        settings_repo = get_settings().get("CONFIG.GLOBAL_SETTINGS_REPO", "pr-agent-settings")
+        settings_file = get_settings().get("CONFIG.GLOBAL_SETTINGS_FILE", ".pr_agent.toml")
+        global_repo_path = self._resolve_global_settings_repo(settings_repo)
+        if not global_repo_path:
+            return ""
+
+        try:
+            repo_obj = self._get_global_settings_repo(global_repo_path)
+            contents = repo_obj.get_contents(settings_file).decoded_content
+            return self._render_global_repo_settings(contents, repo_obj)
+        except GithubException as e:
+            if getattr(e, "status", None) not in (403, 404):
+                get_logger().warning(
+                    f"Failed to read global settings from {global_repo_path}/{settings_file}, error: {str(e)}")
+            return ""
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to read global settings from {global_repo_path}/{settings_file}, error: {str(e)}")
+            return ""
+
+    def _render_global_repo_settings(self, contents: bytes, repo_obj) -> bytes:
+        placeholder = "{{PIPARO_SKILL_REVIEW_RULES}}"
+        try:
+            settings_text = contents.decode()
+        except Exception:
+            return contents
+        if placeholder not in settings_text:
+            return contents
+        skill_rules = self._get_global_skill_review_rules(repo_obj)
+        return settings_text.replace(placeholder, skill_rules).encode()
+
+    def _get_global_skill_review_rules(self, repo_obj) -> str:
+        try:
+            repo_map_text = repo_obj.get_contents("repo-map.toml").decoded_content.decode()
+            repo_map = tomllib.loads(repo_map_text)
+            repo_config = repo_map.get("repos", {}).get(self.repo, {})
+            profiles = repo_config.get("profiles", [])
+            if not profiles:
+                return "- No repository-specific skill profiles configured."
+
+            rules = []
+            missing_profiles = []
+            for profile in profiles:
+                try:
+                    content = repo_obj.get_contents(f"rules/generated/{profile}.md").decoded_content.decode().strip()
+                    rules.append(content)
+                except GithubException as e:
+                    if getattr(e, "status", None) not in (403, 404):
+                        raise
+                    missing_profiles.append(profile)
+            if missing_profiles:
+                get_logger().warning(
+                    f"Global skill review rules missing profiles for {self.repo}: {missing_profiles}")
+            if not rules:
+                return "- No generated skill review rules available."
+
+            joined_rules = "\n\n---\n\n".join(rules)
+            max_chars = 12000
+            if len(joined_rules) > max_chars:
+                joined_rules = joined_rules[:max_chars] + "\n\n[skill review rules clipped]"
+            return joined_rules
+        except Exception as e:
+            get_logger().warning(f"Failed to load global skill review rules for {self.repo}, error: {str(e)}")
+            return "- Failed to load generated skill review rules."
+
+    def _resolve_global_settings_repo(self, settings_repo: str) -> str:
+        settings_repo = (settings_repo or "").strip()
+        if not settings_repo:
+            return ""
+        if "/" in settings_repo:
+            return settings_repo
+        workspace_name = self.get_workspace_name()
+        if not workspace_name:
+            return ""
+        return f"{workspace_name}/{settings_repo}"
+
+    def _get_global_settings_repo(self, global_repo_path: str):
+        if global_repo_path == self.repo:
+            return self._get_repo()
+        try:
+            return self.github_client.get_repo(global_repo_path)
+        except GithubException as e:
+            if self.deployment_type != 'app' or getattr(e, "status", None) not in (403, 404):
+                raise
+
+        return self._get_github_app_client_for_repo(global_repo_path).get_repo(global_repo_path)
+
+    def _get_github_app_client_for_repo(self, repo_path: str):
+        try:
+            private_key = get_settings().github.private_key
+            app_id = get_settings().github.app_id
+        except AttributeError as e:
+            raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
+
+        owner, repo = repo_path.split('/', 1)
+        integration = GithubIntegration(app_id, private_key, base_url=self.base_url)
+        installation = integration.get_repo_installation(owner, repo)
+        return integration.get_github_for_installation(installation.id)
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]

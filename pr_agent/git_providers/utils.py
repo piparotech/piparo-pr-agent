@@ -11,83 +11,121 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger
 
 
+DYNACONF_REPO_SETTINGS_KWARGS = {
+    'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
+    'loaders': ['pr_agent.custom_merge_loader'],
+    # Use a custom loader to merge sections, but overwrite their overlapping values. Don't involve ENV variables.
+    'merge_enabled': True,  # Merge multiple files; ensures [XYZ] sections only overwrite overlapping keys, not whole sections.
+}
+
+
 def apply_repo_settings(pr_url):
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     git_provider = get_git_provider_with_context(pr_url)
+    settings_sources = []
+
+    if get_settings().config.use_global_settings_file:
+        settings_sources.append(
+            ('global', _get_cached_provider_settings(git_provider, 'global_repo_settings', 'get_global_repo_settings'))
+        )
+
     if get_settings().config.use_repo_settings_file:
-        repo_settings_file = None
-        try:
-            try:
-                repo_settings = context.get("repo_settings", None)
-            except Exception:
-                repo_settings = None
-                pass
-            if repo_settings is None:  # None is different from "", which is a valid value
-                repo_settings = git_provider.get_repo_settings()
-                try:
-                    context["repo_settings"] = repo_settings
-                except Exception:
-                    pass
+        settings_sources.append(
+            ('local', _get_cached_provider_settings(git_provider, 'repo_settings', 'get_repo_settings'))
+        )
 
-            error_local = None
-            if repo_settings:
-                repo_settings_file = None
-                category = 'local'
-                try:
-                    fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
-                    os.write(fd, repo_settings)
+    config_errors = []
+    for category, repo_settings in settings_sources:
+        if not repo_settings:
+            continue
+        error = _apply_settings_content(repo_settings, category)
+        if error:
+            config_errors.append(error)
 
-                    try:
-                        dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
-                             'loaders': ['pr_agent.custom_merge_loader'],
-                             # Use a custom loader to merge sections, but overwrite their overlapping values. Don't involve ENV variables.
-                             'merge_enabled': True  # Merge multiple files; ensures [XYZ] sections only overwrite overlapping keys, not whole sections.
-                         }
-
-                        new_settings = Dynaconf(settings_files=[repo_settings_file],
-                                                # Disable all dynamic loading features
-                                                load_dotenv=False,  # Don't load .env files
-                                                envvar_prefix=False,  # Drop DYNACONF for env. variables
-                                                **dynconf_kwargs
-                                                )
-                    except TypeError as e:
-                        # Fallback for older Dynaconf versions that don't support these parameters
-                        get_logger().warning(
-                            "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
-                            "Loading repo settings without these security features. "
-                            "Please upgrade Dynaconf for better security.",
-                            artifact={"error": e, "traceback": traceback.format_exc()})
-                        new_settings = Dynaconf(settings_files=[repo_settings_file])
-
-                    for section, contents in new_settings.as_dict().items():
-                        if not contents:
-                            # Skip excluded items, such as forbidden to load env.
-                            get_logger().debug(f"Skipping a section: {section} which is not allowed")
-                            continue
-                        section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
-                        for key, value in contents.items():
-                            section_dict[key] = value
-                        get_settings().unset(section)
-                        get_settings().set(section, section_dict, merge=False)
-                    get_logger().info(f"Applying repo settings:\n{new_settings.as_dict()}")
-                except Exception as e:
-                    get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
-                    error_local = {'error': str(e), 'settings': repo_settings, 'category': category}
-
-                if error_local:
-                    handle_configurations_errors([error_local], git_provider)
-        except Exception as e:
-            get_logger().exception("Failed to apply repo settings", e)
-        finally:
-            if repo_settings_file:
-                try:
-                    os.remove(repo_settings_file)
-                except Exception as e:
-                    get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}", e)
+    if config_errors:
+        handle_configurations_errors(config_errors, git_provider)
 
     # enable switching models with a short definition
     if get_settings().config.model.lower() == 'claude-3-5-sonnet':
         set_claude_model()
+
+
+def _get_cached_provider_settings(git_provider, cache_key, provider_method):
+    try:
+        repo_settings = context.get(cache_key, None)
+    except Exception:
+        repo_settings = None
+    if repo_settings is not None:  # None is different from "", which is a valid value
+        return repo_settings
+
+    if not hasattr(git_provider, provider_method):
+        repo_settings = ""
+    else:
+        try:
+            repo_settings = getattr(git_provider, provider_method)()
+        except Exception as e:
+            get_logger().warning(f"Failed to get {cache_key}, error: {str(e)}")
+            repo_settings = ""
+
+    try:
+        context[cache_key] = repo_settings
+    except Exception:
+        pass
+    return repo_settings
+
+
+def _apply_settings_content(repo_settings, category):
+    repo_settings_file = None
+    try:
+        fd, repo_settings_file = tempfile.mkstemp(suffix='.toml')
+        with os.fdopen(fd, 'wb') as f:
+            f.write(_settings_to_bytes(repo_settings))
+
+        try:
+            new_settings = Dynaconf(settings_files=[repo_settings_file],
+                                    # Disable all dynamic loading features
+                                    load_dotenv=False,  # Don't load .env files
+                                    envvar_prefix=False,  # Drop DYNACONF for env. variables
+                                    **DYNACONF_REPO_SETTINGS_KWARGS
+                                    )
+        except TypeError as e:
+            # Fallback for older Dynaconf versions that don't support these parameters
+            get_logger().warning(
+                "Your Dynaconf version does not support disabled 'load_dotenv'/'merge_enabled' parameters. "
+                "Loading repo settings without these security features. "
+                "Please upgrade Dynaconf for better security.",
+                artifact={"error": e, "traceback": traceback.format_exc()})
+            new_settings = Dynaconf(settings_files=[repo_settings_file])
+
+        for section, contents in new_settings.as_dict().items():
+            if not contents:
+                # Skip excluded items, such as forbidden to load env.
+                get_logger().debug(f"Skipping a section: {section} which is not allowed")
+                continue
+            section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
+            for key, value in contents.items():
+                section_dict[key] = value
+            get_settings().unset(section)
+            get_settings().set(section, section_dict, merge=False)
+        get_logger().info(f"Applying {category} repo settings:\n{new_settings.as_dict()}")
+        return None
+    except Exception as e:
+        get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
+        return {'error': str(e), 'settings': _settings_to_bytes(repo_settings), 'category': category}
+    finally:
+        if repo_settings_file:
+            try:
+                os.remove(repo_settings_file)
+            except Exception as e:
+                get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}", e)
+
+
+def _settings_to_bytes(repo_settings):
+    if isinstance(repo_settings, bytes):
+        return repo_settings
+    if isinstance(repo_settings, str):
+        return repo_settings.encode()
+    return bytes(repo_settings)
 
 
 def handle_configurations_errors(config_errors, git_provider):
