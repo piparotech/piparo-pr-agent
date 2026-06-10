@@ -30,6 +30,9 @@ from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
                            IncrementalPR)
 
 
+DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS = 30000
+
+
 class GithubProvider(GitProvider):
     def __init__(self, pr_url: Optional[str] = None):
         self.repo_obj = None
@@ -885,7 +888,7 @@ class GithubProvider(GitProvider):
             for profile in profiles:
                 try:
                     content = repo_obj.get_contents(f"rules/generated/{profile}.md").decoded_content.decode().strip()
-                    rules.append(content)
+                    rules.append((profile, content))
                 except GithubException as e:
                     if getattr(e, "status", None) not in (403, 404):
                         raise
@@ -896,14 +899,80 @@ class GithubProvider(GitProvider):
             if not rules:
                 return "- No generated skill review rules available."
 
-            joined_rules = "\n\n---\n\n".join(rules)
-            max_chars = 12000
-            if len(joined_rules) > max_chars:
-                joined_rules = joined_rules[:max_chars] + "\n\n[skill review rules clipped]"
-            return joined_rules
+            max_chars = self._get_global_skill_review_rules_max_chars(repo_config)
+            return self._pack_global_skill_review_rules(rules, max_chars)
         except Exception as e:
             get_logger().warning(f"Failed to load global skill review rules for {self.repo}, error: {str(e)}")
             return "- Failed to load generated skill review rules."
+
+    def _get_global_skill_review_rules_max_chars(self, repo_config: dict) -> int:
+        configured_max_chars = repo_config.get("max_skill_rule_chars", DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS)
+        try:
+            max_chars = int(configured_max_chars)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"Invalid max_skill_rule_chars for {self.repo}: {configured_max_chars}; "
+                f"using {DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS}")
+            return DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS
+        if max_chars < 1000:
+            get_logger().warning(
+                f"max_skill_rule_chars for {self.repo} is too small: {max_chars}; "
+                f"using {DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS}")
+            return DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS
+        return max_chars
+
+    def _pack_global_skill_review_rules(self, profile_rules: list[tuple[str, str]], max_chars: int) -> str:
+        separator = "\n\n---\n\n"
+        included_rules = []
+        omitted_profiles = []
+        clipped_profiles = []
+        used_chars = 0
+
+        for index, (profile, content) in enumerate(profile_rules):
+            content = content.strip()
+            separator_chars = len(separator) if included_rules else 0
+            next_used_chars = used_chars + separator_chars + len(content)
+            if next_used_chars <= max_chars:
+                included_rules.append(content)
+                used_chars = next_used_chars
+                continue
+
+            remaining_profiles = [name for name, _ in profile_rules[index:]]
+            if not included_rules:
+                included_rules.append(self._clip_global_skill_review_profile(profile, content, max_chars))
+                clipped_profiles.append(profile)
+                omitted_profiles.extend(remaining_profiles[1:])
+            else:
+                omitted_profiles.extend(remaining_profiles)
+            break
+
+        if omitted_profiles:
+            get_logger().warning(
+                f"Global skill review rules omitted profiles for {self.repo} due to prompt budget: {omitted_profiles}")
+        if clipped_profiles:
+            get_logger().warning(
+                f"Global skill review rules clipped profiles for {self.repo} due to prompt budget: {clipped_profiles}")
+
+        packed_rules = separator.join(included_rules)
+        footers = []
+        if clipped_profiles:
+            footers.append(f"[skill review rules clipped due to prompt budget: {', '.join(clipped_profiles)}]")
+        if omitted_profiles:
+            footers.append(f"[skill review rules omitted due to prompt budget: {', '.join(omitted_profiles)}]")
+        if footers:
+            packed_rules = "\n\n".join([packed_rules, *footers])
+        return packed_rules
+
+    def _clip_global_skill_review_profile(self, profile: str, content: str, max_chars: int) -> str:
+        if len(content) <= max_chars:
+            return content
+        paragraph_boundary = content.rfind("\n\n", 0, max_chars)
+        if paragraph_boundary >= max_chars // 2:
+            return content[:paragraph_boundary].rstrip()
+        line_boundary = content.rfind("\n", 0, max_chars)
+        if line_boundary >= max_chars // 2:
+            return content[:line_boundary].rstrip()
+        return content[:max_chars].rstrip()
 
     def _resolve_global_settings_repo(self, settings_repo: str) -> str:
         settings_repo = (settings_repo or "").strip()

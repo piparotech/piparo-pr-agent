@@ -128,3 +128,58 @@ def test_github_global_skill_rules_tolerates_missing_profile():
     ]
 
     assert provider._get_global_skill_review_rules(repo_obj) == "- No generated skill review rules available."
+
+
+def test_github_global_skill_rules_packs_complete_profiles_until_budget():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "piparotech/smartcoach"
+
+    packed = provider._pack_global_skill_review_rules([
+        ("common", "# Common\n\n- common rule"),
+        ("typescript", "# TypeScript\n\n" + "x" * 200),
+        ("backend", "# Backend\n\n- backend rule"),
+    ], max_chars=80)
+
+    assert "# Common" in packed
+    assert "# TypeScript" not in packed
+    assert "# Backend" not in packed
+    assert "skill review rules omitted due to prompt budget: typescript, backend" in packed
+
+
+def test_github_global_skill_rules_clips_single_oversized_profile_at_boundary():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "piparotech/smartcoach"
+
+    packed = provider._pack_global_skill_review_rules([
+        ("expo-react-native", "# Expo\n\n- first rule\n\n- second rule that should not fit"),
+    ], max_chars=24)
+
+    assert packed.startswith("# Expo")
+    assert "- second rule" not in packed
+    assert "skill review rules clipped due to prompt budget: expo-react-native" in packed
+
+
+def test_github_global_skill_rules_uses_repo_map_budget():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "piparotech/smartcoach"
+
+    repo_obj = Mock()
+    repo_obj.get_contents.side_effect = [
+        Mock(decoded_content=b'[repos."piparotech/smartcoach"]\nprofiles = ["common", "typescript"]\nmax_skill_rule_chars = 1000\n'),
+        Mock(decoded_content=b'# Common\n\n- common rule'),
+        Mock(decoded_content=("# TypeScript\n\n" + "x" * 2000).encode()),
+    ]
+
+    packed = provider._get_global_skill_review_rules(repo_obj)
+
+    assert "# Common" in packed
+    assert "# TypeScript" not in packed
+    assert "skill review rules omitted due to prompt budget: typescript" in packed
+
+
+def test_github_global_skill_rules_invalid_budget_uses_default():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "piparotech/smartcoach"
+
+    assert provider._get_global_skill_review_rules_max_chars({"max_skill_rule_chars": "invalid"}) == 30000
+    assert provider._get_global_skill_review_rules_max_chars({"max_skill_rule_chars": 10}) == 30000
