@@ -13,6 +13,9 @@ This repository keeps the existing `piparotech/piparo-pr-agent` URL, but tracks 
 - Review comments include a short `@piparo-agent` command hint.
 - `/describe` output is wrapped in visible Piparo generated-content markers.
 - The image is built from this repository's source instead of patching files inside an upstream image.
+- A separate, fail-closed Forgejo webhook process supports Forgejo 16 with isolated credentials, owner allowlisting, and bot-loop suppression.
+
+The semantic audit of all 29 pre-sync Piparo commits is recorded in [`PIPARO_UPSTREAM_SYNC.md`](PIPARO_UPSTREAM_SYNC.md).
 
 ## Image
 
@@ -22,7 +25,7 @@ The GitHub Actions workflow publishes unique deploy images:
 ghcr.io/piparotech/piparo-pr-agent:YYYY-MM-DD-<short-sha>
 ```
 
-It then updates `piparotech/infra` at `pr-agent/pr-agent.yaml` to the same unique tag. The workflow needs `DEPLOY_PAT` with write access to `piparotech/infra`.
+It then updates both `piparotech/infra` manifests, `pr-agent/pr-agent.yaml` and `pr-agent/forgejo.yaml`, to the same unique tag. The workflow needs `DEPLOY_PAT` with write access to `piparotech/infra`.
 
 ## Sync upstream
 

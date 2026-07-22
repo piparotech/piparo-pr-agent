@@ -36,12 +36,17 @@
     CONFIG__GIT_PROVIDER=gitea
     GITEA__PERSONAL_ACCESS_TOKEN=<personal_access_token>
     GITEA__WEBHOOK_SECRET=<webhook_secret>
-    GITEA__URL=https://gitea.com # Or self host
+    GITEA__URL=https://gitea.com # Public browser URL, or your Forgejo/Gitea host
+    GITEA__API_URL=https://gitea.com # Optional internal API base when it differs from the browser URL
+    GITEA__ALLOWED_OWNERS=approved-owner # Required; empty/missing fails closed
+    GITEA__BOT_USER=pr-agent-bot # Required to suppress webhook loops from the bot itself
     OPENAI__KEY=<your_openai_api_key>
     GITEA__SKIP_SSL_VERIFICATION=false # or true
     GITEA__SSL_CA_CERT=/path/to/cacert.pem
     ```
 
-8. Create a webhook in your Gitea project. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/api/v1/gitea_webhooks`, the secret token to the generated secret from step 3, and enable the triggers `push`, `comments` and `merge request events`.
+8. Create a Forgejo/Gitea webhook. Set the URL to `http[s]://<PR_AGENT_HOSTNAME>/api/v1/gitea_webhooks`, the secret token to the generated secret from step 3, and enable `pull_request` and `issue_comment` events. Requests without a valid `X-Gitea-Signature` are rejected. The webhook target must also be allowed by the Forgejo/Gitea server's outbound webhook host policy.
 
-9. Test your installation by opening a merge request or commenting on a merge request using one of PR Agent's commands.
+9. Use a dedicated non-admin bot token with only the repository and issue permissions required for reviews and comments. Keep GitHub and Forgejo servers in separate processes because `CONFIG__GIT_PROVIDER` is process-global.
+
+10. Test your installation by opening a pull request or commenting on one using a PR-Agent command.
