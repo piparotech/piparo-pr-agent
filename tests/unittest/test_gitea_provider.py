@@ -333,6 +333,32 @@ class TestGiteaProvider:
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
         assert empty.get_repo_settings() == b""
+        empty.logger.info.assert_called_once_with(
+            "Repository settings file not found", settings_path=".pr_agent.toml"
+        )
+
+    def test_raw_file_404_is_logged_as_expected_missing_content(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        api_client = MagicMock()
+        api_client.call_api.side_effect = ApiException(status=404)
+        repo_api = RepoApi(api_client)
+        repo_api.logger = MagicMock()
+
+        assert repo_api.get_file_content("owner", "repo", "sha1", "new-file.txt") == ""
+        repo_api.logger.debug.assert_called_once_with("File not found at ref: new-file.txt")
+        repo_api.logger.error.assert_not_called()
+
+    def test_raw_file_non_404_is_logged_as_error(self):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        api_client = MagicMock()
+        api_client.call_api.side_effect = ApiException(status=500)
+        repo_api = RepoApi(api_client)
+        repo_api.logger = MagicMock()
+
+        assert repo_api.get_file_content("owner", "repo", "sha1", "file.txt") == ""
+        repo_api.logger.error.assert_called_once()
 
     def test_get_repo_file_content_loads_from_base_sha(self):
         provider = GiteaProvider.__new__(GiteaProvider)

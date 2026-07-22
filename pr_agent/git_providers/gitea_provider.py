@@ -617,7 +617,7 @@ class GiteaProvider(GitProvider):
     def get_repo_settings(self) -> bytes:
         """Get repository settings"""
         if not self.repo_settings:
-            self.logger.error("Repository settings not found")
+            self.logger.debug("Repository settings are not configured")
             return b""
 
         settings_ref = self.base_sha or self.base_ref
@@ -632,7 +632,7 @@ class GiteaProvider(GitProvider):
             filepath=self.repo_settings
         )
         if not response:
-            self.logger.error("Failed to get repository settings")
+            self.logger.info("Repository settings file not found", settings_path=self.repo_settings)
             return b""
 
         # utils.apply_repo_settings() writes this via os.write() and later
@@ -1007,7 +1007,10 @@ class RepoApi(giteapy.RepositoryApi):
             return ""
 
         except ApiException as e:
-            self.logger.error(f"Error getting file: {filepath}, content: {e}")
+            if e.status == 404:
+                self.logger.debug(f"File not found at ref: {filepath}")
+            else:
+                self.logger.error(f"Error getting file: {filepath}, content: {e}")
             return ""
         except Exception as e:
             self.logger.error(f"Unexpected error: {e}")
