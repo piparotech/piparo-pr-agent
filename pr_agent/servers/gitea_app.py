@@ -54,8 +54,12 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
     body = await get_body(request)
 
     allowed_owners = _configured_values("GITEA.ALLOWED_OWNERS")
+    if not allowed_owners:
+        get_logger().error("Gitea repository owner allowlist is not configured")
+        raise HTTPException(status_code=503, detail="Repository owner allowlist is not configured")
+
     owner = _repository_owner(body)
-    if allowed_owners and owner not in allowed_owners:
+    if owner not in allowed_owners:
         get_logger().warning("Blocked webhook for unapproved Gitea owner", owner=owner)
         raise HTTPException(status_code=403, detail="Repository owner is not allowed")
 

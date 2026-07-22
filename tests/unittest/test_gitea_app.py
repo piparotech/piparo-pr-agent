@@ -103,6 +103,13 @@ def test_unapproved_owner_is_rejected(gitea_settings):
     assert response.status_code == 403
 
 
+def test_unconfigured_owner_allowlist_fails_closed(gitea_settings):
+    get_settings().set("GITEA.ALLOWED_OWNERS", [])
+    client = TestClient(app)
+    response = _post(client, _payload())
+    assert response.status_code == 503
+
+
 @pytest.mark.asyncio
 async def test_bot_sender_is_ignored(gitea_settings):
     with patch("pr_agent.servers.gitea_app.PRAgent") as agent_cls:
