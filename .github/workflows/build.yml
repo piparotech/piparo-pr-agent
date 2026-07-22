@@ -18,7 +18,7 @@ concurrency:
 env:
   IMAGE_NAME: ghcr.io/piparotech/piparo-pr-agent
   INFRA_REPOSITORY: piparotech/infra
-  INFRA_MANIFEST: pr-agent/pr-agent.yaml
+  INFRA_MANIFESTS: pr-agent/pr-agent.yaml,pr-agent/forgejo.yaml
 
 jobs:
   test:
@@ -106,7 +106,7 @@ jobs:
           token: ${{ secrets.DEPLOY_PAT }}
           path: infra-repo
 
-      - name: Update PR-Agent image tag
+      - name: Update PR-Agent image tags
         id: update
         run: |
           python3 - <<'PY'
@@ -114,34 +114,34 @@ jobs:
           import re
           from pathlib import Path
 
-          manifest = Path("infra-repo") / os.environ["INFRA_MANIFEST"]
-          image = f"{os.environ['IMAGE_NAME']}:{os.environ['IMAGE_TAG']}"
-          lines = manifest.read_text(encoding="utf-8").splitlines(keepends=True)
+          manifests = [Path("infra-repo") / item.strip() for item in os.environ["INFRA_MANIFESTS"].split(",")]
+          image_name = os.environ["IMAGE_NAME"]
+          image = f"{image_name}:{os.environ['IMAGE_TAG']}"
+          image_pattern = re.compile(rf"^(\s*image:\s*){re.escape(image_name)}:[^\s]+(\s*)$")
+          updated = []
 
-          in_pr_agent_container = False
-          updated = False
-          for index, line in enumerate(lines):
-              if re.match(r"\s*-\s*name:\s*pr-agent\s*$", line):
-                  in_pr_agent_container = True
-                  continue
-              if not in_pr_agent_container:
-                  continue
-              if re.match(r"\s*-\s*name:\s+", line):
-                  in_pr_agent_container = False
-                  continue
-              if re.match(r"\s*image:\s+", line):
-                  indent = line.split("image:", 1)[0]
-                  lines[index] = f"{indent}image: {image}\n"
-                  updated = True
-                  break
+          for manifest in manifests:
+              lines = manifest.read_text(encoding="utf-8").splitlines(keepends=True)
+              matches = []
+              for index, line in enumerate(lines):
+                  newline = "\n" if line.endswith("\n") else ""
+                  match = image_pattern.match(line.rstrip("\n"))
+                  if match:
+                      matches.append(index)
+                      lines[index] = f"{match.group(1)}{image}{match.group(2)}{newline}"
 
-          if not updated:
-              raise SystemExit(f"Could not find pr-agent container image in {manifest}")
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"Expected exactly one {image_name} image in {manifest}, found {len(matches)}"
+                  )
+              manifest.write_text("".join(lines), encoding="utf-8")
+              updated.append(str(manifest.relative_to("infra-repo")))
 
-          manifest.write_text("".join(lines), encoding="utf-8")
+          print(f"Updated manifests: {', '.join(updated)}")
           PY
 
-          if git -C infra-repo diff --quiet -- "$INFRA_MANIFEST"; then
+          IFS=',' read -ra manifests <<< "$INFRA_MANIFESTS"
+          if git -C infra-repo diff --quiet -- "${manifests[@]}"; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -152,7 +152,8 @@ jobs:
         run: |
           git -C infra-repo config user.name "github-actions[bot]"
           git -C infra-repo config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C infra-repo add "$INFRA_MANIFEST"
+          IFS=',' read -ra manifests <<< "$INFRA_MANIFESTS"
+          git -C infra-repo add "${manifests[@]}"
           git -C infra-repo commit -m "Deploy PR-Agent ${IMAGE_TAG}"
           git -C infra-repo push
 
@@ -162,6 +163,6 @@ jobs:
           {
             echo "### piparo-pr-agent deploy"
             echo "- Image: \`${IMAGE_NAME}:${IMAGE_TAG}\`"
-            echo "- Infra manifest: \`${INFRA_MANIFEST}\`"
+            echo "- Infra manifests: \`${INFRA_MANIFESTS}\`"
             echo "- Infra changed: \`${{ steps.update.outputs.changed || 'false' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
