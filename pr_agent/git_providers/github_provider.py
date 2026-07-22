@@ -2,10 +2,11 @@ import copy
 import difflib
 import hashlib
 import itertools
+import json
+import os
 import re
 import time
 import traceback
-import json
 import tomllib
 from datetime import datetime, timezone
 from typing import Optional, Tuple
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 
 from github.Issue import Issue
 from github import AppAuthentication, Auth, Github, GithubException, GithubIntegration
-from retry import retry
+from retry.api import retry_call
 from starlette_context import context
 
 from ..algo.file_filter import filter_ignored
@@ -27,10 +28,21 @@ from ..config_loader import get_settings
 from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (MAX_FILES_ALLOWED_FULL, FilePatchInfo, GitProvider,
-                           IncrementalPR)
+                           IncrementalPR, get_cached_global_settings)
 
 
 DEFAULT_GLOBAL_SKILL_RULES_MAX_CHARS = 30000
+
+
+def _next_page_url(headers: dict) -> str:
+    link = headers.get("Link", "")
+    if not link:
+        return ""
+    for part in link.split(","):
+        match = re.search(r'<([^>]+)>\s*;\s*rel="next"', part.strip())
+        if match:
+            return match.group(1)
+    return ""
 
 
 class GithubProvider(GitProvider):
@@ -52,6 +64,7 @@ class GithubProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.incremental = IncrementalPR(False)
+        self._check_run_ids: dict = {}
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
@@ -83,10 +96,12 @@ class GithubProvider(GitProvider):
     def get_incremental_commits(self, incremental=IncrementalPR(False)):
         self.incremental = incremental
         if self.incremental.is_incremental:
-            self.unreviewed_files_set = dict()
+            self.unreviewed_files_map = dict()
             self._get_incremental_commits()
 
     def is_supported(self, capability: str) -> bool:
+        if capability == "push_code" and get_settings().config.restricted_mode:
+            return False
         return True
 
     def _get_owner_and_repo_path(self, given_url: str) -> str:
@@ -166,7 +181,7 @@ class GithubProvider(GitProvider):
                 if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_set.update({file.filename: file for file in commit.files})
+                self.unreviewed_files_map.update({file.filename: file for file in commit.files})
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -196,10 +211,11 @@ class GithubProvider(GitProvider):
         for index in range(len(self.comments) - 1, -1, -1):
             if any(self.comments[index].body.startswith(prefix) for prefix in prefixes):
                 return self.comments[index]
+        return None
 
     def get_files(self):
-        if self.incremental.is_incremental and self.unreviewed_files_set:
-            return self.unreviewed_files_set.values()
+        if self.incremental.is_incremental and self.unreviewed_files_map:
+            return self.unreviewed_files_map.values()
         try:
             git_files = context.get("git_files", None)
             if git_files:
@@ -221,8 +237,6 @@ class GithubProvider(GitProvider):
             except Exception as e:
                 return -1
 
-    @retry(exceptions=RateLimitExceeded,
-           tries=get_settings().github.ratelimit_retries, delay=2, backoff=2, jitter=(1, 3))
     def get_diff_files(self) -> list[FilePatchInfo]:
         """
         Retrieves the list of files that have been modified, added, deleted, or renamed in a pull request in GitHub,
@@ -232,6 +246,12 @@ class GithubProvider(GitProvider):
             diff_files (List[FilePatchInfo]): List of FilePatchInfo objects representing the modified, added, deleted,
             or renamed files in the merge request.
         """
+        # the retry settings are read at call time rather than in a decorator, so that importing this module
+        # does not require a [github] settings section (issue #2427)
+        return retry_call(self._get_diff_files, exceptions=RateLimitExceeded,
+                          tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
+
+    def _get_diff_files(self) -> list[FilePatchInfo]:
         try:
             try:
                 diff_files = context.get("diff_files", None)
@@ -300,10 +320,10 @@ class GithubProvider(GitProvider):
                     else:
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
 
-                    if self.incremental.is_incremental and self.unreviewed_files_set:
+                    if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(file, self.incremental.last_seen_commit_sha)
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                        self.unreviewed_files_set[file.filename] = patch
+                        self.unreviewed_files_map[file.filename] = patch
                     else:
                         if avoid_load:
                             original_file_content_str = ""
@@ -357,7 +377,10 @@ class GithubProvider(GitProvider):
             raise RateLimitExceeded("Rate limit exceeded for GitHub API.") from e
 
     def publish_description(self, pr_title: str, pr_body: str):
-        self.pr.edit(title=pr_title, body=pr_body)
+        if pr_title is None:
+            self.pr.edit(body=pr_body)
+        else:
+            self.pr.edit(title=pr_title, body=pr_body)
 
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
@@ -402,14 +425,10 @@ class GithubProvider(GitProvider):
             return ""
         return description[:137] + "..." if len(description) > 140 else description
 
-    # How many recent commits to scan for an existing usage check before giving up. The check
-    # almost always lives on the head commit; the small look-back only covers the first command
-    # after a new push. Bounding it keeps API cost flat on long-lived PRs.
     USAGE_CHECK_COMMIT_LOOKBACK = 3
 
     def get_total_usage_check_text(self, check_name: str) -> str:
-        """Return the markdown body of the most recent usage check run on this PR (head first,
-        then a few older commits) so cumulative totals survive across commits."""
+        """Return the newest cumulative usage report from the current or recent PR commits."""
         commits = []
         if getattr(self, "last_commit_id", None) is not None:
             commits.append(self.last_commit_id)
@@ -427,8 +446,7 @@ class GithubProvider(GitProvider):
         return ""
 
     def publish_total_usage_check(self, check_name: str, title: str, summary: str, text: str) -> bool:
-        """Create or update an informational (neutral) check run carrying the cumulative usage
-        report, replacing the previous standalone PR comment."""
+        """Create or update the neutral check run carrying cumulative usage."""
         if getattr(self, "last_commit_id", None) is None:
             return False
         output = {
@@ -437,19 +455,18 @@ class GithubProvider(GitProvider):
             "text": (text or "")[:65535],
         }
         try:
-            existing = None
-            for run in self.last_commit_id.get_check_runs(check_name=check_name):
-                existing = run
-                break
+            existing = next(iter(self.last_commit_id.get_check_runs(check_name=check_name)), None)
             completed_at = datetime.now(timezone.utc)
             if existing is not None:
-                existing.edit(status="completed", conclusion="neutral",
-                              completed_at=completed_at, output=output)
+                existing.edit(status="completed", conclusion="neutral", completed_at=completed_at, output=output)
             else:
                 self._get_repo().create_check_run(
-                    name=check_name, head_sha=self.last_commit_id.sha,
-                    status="completed", conclusion="neutral",
-                    completed_at=completed_at, output=output,
+                    name=check_name,
+                    head_sha=self.last_commit_id.sha,
+                    status="completed",
+                    conclusion="neutral",
+                    completed_at=completed_at,
+                    output=output,
                 )
             return True
         except GithubException as e:
@@ -467,7 +484,84 @@ class GithubProvider(GitProvider):
                                    update_header: bool = True,
                                    name='review',
                                    final_update_message=True):
+        if get_settings().github.publish_as_check_run:
+            if self._publish_check_run(pr_comment, name):
+                return
         self.publish_persistent_comment_full(pr_comment, initial_header, update_header, name, final_update_message)
+
+    def _publish_check_run(self, text: str, name: str) -> bool:
+        if not getattr(self, 'last_commit_id', None):
+            get_logger().error("Cannot publish check run without a commit SHA")
+            return False
+        conclusion = "neutral"
+        check_run_name = f"PR Agent - {name.capitalize()}"
+        summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
+        summary = summary.strip(" #")
+        # GitHub Checks API limits: text 65535 chars, summary 65535 chars
+        max_text = 65535
+        if len(text) > max_text:
+            text = text[:max_text]
+        create_body = {
+            "name": check_run_name,
+            "head_sha": self.last_commit_id.sha,
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        update_body = {
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": check_run_name,
+                "summary": summary[:300],
+                "text": text,
+            },
+        }
+        existing_id = self._check_run_ids.get(name)
+        if not existing_id:
+            existing_id = self._find_existing_check_run(check_run_name, self.last_commit_id.sha)
+        if existing_id:
+            try:
+                self.pr._requester.requestJsonAndCheck(
+                    "PATCH",
+                    f"{self.base_url}/repos/{self.repo}/check-runs/{existing_id}",
+                    input=update_body,
+                )
+                self._check_run_ids[name] = existing_id
+                return True
+            except Exception:
+                get_logger().warning(f"Failed to update check run {existing_id}, creating new one")
+        try:
+            headers, data = self.pr._requester.requestJsonAndCheck(
+                "POST",
+                f"{self.base_url}/repos/{self.repo}/check-runs",
+                input=create_body,
+            )
+            self._check_run_ids[name] = data["id"]
+            return True
+        except Exception:
+            get_logger().warning(f"Failed to create check run, falling back to comment")
+            return False
+
+    def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
+        pr = getattr(self, 'pr', None)
+        if not pr:
+            return None
+        try:
+            url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
+            while url:
+                headers, data = pr._requester.requestJsonAndCheck("GET", url)
+                for run in data.get("check_runs", []):
+                    if run.get("name") == check_run_name:
+                        return run["id"]
+                url = _next_page_url(headers)
+        except Exception:
+            get_logger().warning("Failed to look up existing check runs")
+        return None
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         if not self.pr and not self.issue_main:
@@ -832,36 +926,94 @@ class GithubProvider(GitProvider):
         return self.pr.get_issue_comments()
 
     def get_repo_settings(self):
-        try:
-            # contents = self.repo_obj.get_contents(".pr_agent.toml", ref=self.pr.head.sha).decoded_content
+        settings_files = []
+        global_settings = self.get_global_repo_settings()
+        if global_settings:
+            settings_files.append(("global", global_settings))
 
+        # Normalize each candidate before applying precedence so a whitespace-only
+        # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
+        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        config_branch = settings_branch or env_branch
+        if config_branch:
+            # Only treat a missing branch/file (GithubException) as an expected
+            # reason to fall back to the default branch. Unexpected errors are
+            # left to propagate so they aren't masked by a silent fallback.
+            try:
+                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
+                if settings_files:
+                    settings_files.append(("local", contents))
+                    return settings_files
+                return contents
+            except GithubException as e:
+                # Only a missing branch/file (404) is an expected reason to fall back to the default
+                # branch. Other errors (e.g. 403/5xx) are surfaced rather than silently masked by a
+                # fallback that could apply unintended settings.
+                if e.status != 404:
+                    raise
+                get_logger().debug(
+                    f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
+        try:
             # more logical to take 'pr_agent.toml' from the default branch
             contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            return contents
-        except Exception:
-            return ""
+            if config_branch and not settings_files:
+                return contents
+            settings_files.append(("local", contents))
+        except GithubException as e:
+            # A missing local .pr_agent.toml (404) is expected for most repos; log it quietly to
+            # avoid warning noise, and surface only unexpected errors as warnings.
+            if e.status == 404:
+                get_logger().debug("No local .pr_agent.toml found; using existing settings")
+            else:
+                get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
+        except Exception as e:
+            get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
+
+        return settings_files if settings_files else ""
 
     def get_global_repo_settings(self):
-        """Read organization-wide PR-Agent settings from the configured global settings repository."""
-        settings_repo = get_settings().get("CONFIG.GLOBAL_SETTINGS_REPO", "pr-agent-settings")
-        settings_file = get_settings().get("CONFIG.GLOBAL_SETTINGS_FILE", ".pr_agent.toml")
-        global_repo_path = self._resolve_global_settings_repo(settings_repo)
-        if not global_repo_path:
+        return self._get_global_repo_settings()
+
+    def _get_global_repo_settings(self):
+        if not get_settings().config.use_global_settings_file:
             return ""
 
+        # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
+        # without a repo/client there is no org to resolve, so skip global settings quietly.
+        if not getattr(self, "repo", None) or getattr(self, "github_client", None) is None:
+            return ""
+
+        repo_owner = self.get_pr_owner_id()
+        if not repo_owner:
+            return ""
+        # Cache per org: global settings change rarely, so avoid a lookup (and repeated 403/404
+        # fallbacks) on every webhook event.
+        return get_cached_global_settings(
+            f"github:{repo_owner}", lambda: self._fetch_global_repo_settings(repo_owner))
+
+    def _fetch_global_repo_settings(self, repo_owner):
+        global_repo_path = self._resolve_global_settings_repo(
+            get_settings().get("CONFIG.GLOBAL_SETTINGS_REPO", "pr-agent-settings")
+        )
+        settings_file = get_settings().get("CONFIG.GLOBAL_SETTINGS_FILE", ".pr_agent.toml")
+        if not global_repo_path:
+            return ""
         try:
-            repo_obj = self._get_global_settings_repo(global_repo_path)
-            contents = repo_obj.get_contents(settings_file).decoded_content
-            return self._render_global_repo_settings(contents, repo_obj)
+            global_settings_repo = self._get_global_settings_repo(global_repo_path)
+            contents = global_settings_repo.get_contents(settings_file).decoded_content
+            return self._render_global_repo_settings(contents, global_settings_repo)
         except GithubException as e:
-            if getattr(e, "status", None) not in (403, 404):
-                get_logger().warning(
-                    f"Failed to read global settings from {global_repo_path}/{settings_file}, error: {str(e)}")
-            return ""
-        except Exception as e:
-            get_logger().warning(
-                f"Failed to read global settings from {global_repo_path}/{settings_file}, error: {str(e)}")
-            return ""
+            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected,
+            # stable fallback (skip global settings, continue with local) — return "" so it's cached.
+            if e.status in (403, 404):
+                get_logger().debug(
+                    "No accessible organization global .pr_agent.toml; using local settings only",
+                    artifact={"status": e.status})
+                return ""
+            # Transient/unexpected errors propagate so the caller does not cache the failure.
+            raise
 
     def _render_global_repo_settings(self, contents: bytes, repo_obj) -> bytes:
         placeholder = "{{PIPARO_SKILL_REVIEW_RULES}}"
@@ -963,7 +1115,8 @@ class GithubProvider(GitProvider):
             packed_rules = "\n\n".join([packed_rules, *footers])
         return packed_rules
 
-    def _clip_global_skill_review_profile(self, profile: str, content: str, max_chars: int) -> str:
+    @staticmethod
+    def _clip_global_skill_review_profile(profile: str, content: str, max_chars: int) -> str:
         if len(content) <= max_chars:
             return content
         paragraph_boundary = content.rfind("\n\n", 0, max_chars)
@@ -991,7 +1144,7 @@ class GithubProvider(GitProvider):
         try:
             return self.github_client.get_repo(global_repo_path)
         except GithubException as e:
-            if self.deployment_type != 'app' or getattr(e, "status", None) not in (403, 404):
+            if getattr(self, "deployment_type", "user") != "app" or getattr(e, "status", None) not in (403, 404):
                 raise
 
         return self._get_github_app_client_for_repo(global_repo_path).get_repo(global_repo_path)
@@ -1003,10 +1156,35 @@ class GithubProvider(GitProvider):
         except AttributeError as e:
             raise ValueError("GitHub app ID and private key are required when using GitHub app deployment") from e
 
-        owner, repo = repo_path.split('/', 1)
+        owner, repo = repo_path.split("/", 1)
         integration = GithubIntegration(app_id, private_key, base_url=self.base_url)
         installation = integration.get_repo_installation(owner, repo)
         return integration.get_github_for_installation(installation.id)
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
+        try:
+            # Prefer the PR target (base) ref so repo-context instruction files match the branch
+            # the PR is merging into. Fall back to the repo default branch when no PR base is
+            # available, or always when from_default_branch is requested.
+            if from_default_branch:
+                ref = None
+            else:
+                base = getattr(getattr(self, "pr", None), "base", None)
+                ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            if ref:
+                contents = self.repo_obj.get_contents(file_path, ref=ref).decoded_content
+            else:
+                contents = self.repo_obj.get_contents(file_path).decoded_content
+            if isinstance(contents, bytes):
+                return contents.decode("utf-8", errors="replace")
+            return contents
+        except GithubException as e:
+            # A missing file is an expected "no context" outcome. Let transient/unexpected
+            # errors propagate so build_repo_context() treats them as a fetch error and does
+            # not cache an empty result until the TTL expires.
+            if e.status == 404:
+                return ""
+            raise
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]

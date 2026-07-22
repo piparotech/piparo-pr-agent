@@ -164,12 +164,12 @@ key = ... # your Groq api key
 
 ### SambaNova
 
-To use MiniMax-M2.7 model with SambaNova, for example, set:
+To use MiniMax-M3 model with SambaNova, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "sambanova/MiniMax-M2.7"
-fallback_models = ["sambanova/MiniMax-M2.5"]
+model = "sambanova/MiniMax-M3"
+fallback_models = ["sambanova/MiniMax-M2.7"]
 [sambanova] # in .secrets.toml
 key = ... # your SambaNova api key
 ```
@@ -327,12 +327,12 @@ See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentatio
 
 ### DeepSeek
 
-To use deepseek-chat model with DeepSeek, for example, set:
+To use deepseek-v4 model with DeepSeek, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "deepseek/deepseek-chat"
-fallback_models=["deepseek/deepseek-chat"]
+model = "deepseek/deepseek-v4-pro"
+fallback_models=["deepseek/deepseek-v4-flash"]
 ```
 
 and fill up your key
@@ -342,7 +342,7 @@ and fill up your key
 key = ...
 ```
 
-(you can obtain a deepseek-chat key from [here](https://platform.deepseek.com))
+(you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
 
 ### DeepInfra
 
@@ -386,6 +386,21 @@ key = "..." # your Codestral api key
 
 (you can obtain a Codestral key from [here](https://console.mistral.ai/codestral))
 
+### Databricks
+
+To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint), set:
+
+```toml
+[config] # in configuration.toml
+model = "databricks/databricks-claude-sonnet-4"
+fallback_models = ["databricks/databricks-claude-sonnet-4"]
+[databricks] # in .secrets.toml
+api_key = "..." # your Databricks personal access token (PAT)
+api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
+```
+
+The model name after the `databricks/` prefix is the name of your serving endpoint. See LiteLLM's [Databricks provider docs](https://docs.litellm.ai/docs/providers/databricks) for details.
+
 ### Openrouter
 
 To use model from Openrouter, for example, set:
@@ -401,6 +416,23 @@ key = "..." # your openrouter api key
 ```
 
 (you can obtain an Openrouter API key from [here](https://openrouter.ai/settings/keys))
+
+#### Openrouter provider routing, reasoning and output cap
+
+For `openrouter/...` models you can optionally restrict which upstream providers Openrouter uses, control reasoning, and cap the completion length. All keys live in the `[openrouter]` section of `configuration.toml` and default to unset (no change to Openrouter's default behavior):
+
+```toml
+[openrouter]
+# Uncomment and adjust the keys you need; unset keys keep Openrouter's defaults.
+# provider_only = ["z-ai"]             # hard allowlist of upstream providers; empty = default routing
+# provider_order = ["z-ai", "novita"]  # preferred order instead of an allowlist; ignored when provider_only is set
+# allow_fallbacks = true               # when provider_order is set, allow routing beyond the list
+# reasoning_effort = "low"             # "none" disables reasoning; otherwise "low", "medium" or "high"
+# reasoning_max_tokens = 2048          # cap the reasoning budget in tokens
+# max_tokens = 16000                   # hard cap on completion tokens for the request
+```
+
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. See the Openrouter [provider routing](https://openrouter.ai/docs/features/provider-routing) and [reasoning tokens](https://openrouter.ai/docs/use-cases/reasoning-tokens) docs.
 
 ### Custom models
 
@@ -445,3 +477,22 @@ enable_claude_extended_thinking = false # Set to true to enable extended thinkin
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
 ```
+
+By default, PR-Agent applies the extended-thinking payload only to a built-in list of Claude models
+(see `CLAUDE_EXTENDED_THINKING_MODELS` in `pr_agent/algo/__init__.py`). If you use a newer or custom
+Claude model that is not in that list, you can override it:
+
+```toml
+[config]
+claude_extended_thinking_models_override = ["anthropic/claude-my-new-model"]
+```
+
+When `claude_extended_thinking_models_override` is non-empty, it fully replaces the built-in list, so
+include every model that should receive extended thinking. Leave it empty (the default) to use the
+built-in defaults.
+
+!!! note "Only models that accept a thinking budget are supported"
+    PR-Agent enables extended thinking through the manual
+    `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
+    (e.g. Opus 4.7/4.8, Sonnet 5, Fable 5) reject `budget_tokens` and will error if you add them to
+    the list — they are intentionally excluded from the built-in defaults.

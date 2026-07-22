@@ -32,13 +32,14 @@ pr_commands = ["/review"]
 
     def get_repo_settings(self):
         self.local_calls += 1
-        return b"""
+        local_settings = b"""
 [pr_reviewer]
 extra_instructions = "local reviewer"
 
 [github_app]
 push_commands = ["/review -i"]
 """
+        return [("global", self.get_global_repo_settings()), ("local", local_settings)]
 
     def is_supported(self, capability):
         return capability == "gfm_markdown"

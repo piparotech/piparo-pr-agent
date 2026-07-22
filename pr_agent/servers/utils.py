@@ -64,8 +64,6 @@ class DefaultDictWithTimeout(defaultdict):
         if self.__ttl is None:
             return
         request_time = self.__time()
-        # Throttle: only sweep at most once per refresh_interval. (Was inverted, which made the
-        # sweep stop running once the gap exceeded the interval — entries then never expired.)
         if request_time - self.__last_refresh < self.__refresh_interval:
             return
         to_delete = [key for key, key_time in self.__key_times.items() if request_time - key_time > self.__ttl]

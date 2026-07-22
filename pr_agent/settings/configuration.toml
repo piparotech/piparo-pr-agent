@@ -25,6 +25,7 @@ use_global_settings_file=true
 # Repository used for organization-wide settings. Use "owner/repo" to share one settings repo across organizations.
 global_settings_repo="pr-agent-settings"
 global_settings_file=".pr_agent.toml"
+extra_config_url="" # optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url.
 disable_auto_feedback = false
 ai_timeout=120 # 2 minutes
 skip_keys = []
@@ -33,6 +34,9 @@ response_language="en-US" # Language locales code for PR responses in ISO 3166 a
 publish_ai_usage=true # Add provider/model/thinking-level/token usage to final AI comments.
 publish_ai_usage_total_comment=true # Publish cumulative PR-Agent token usage. On GitHub this is a neutral check run; other providers fall back to a single persistent PR comment.
 ai_usage_total_max_runs=25 # Keep this many detailed runs in the cumulative AI usage report; older runs stay in totals.
+repo_context_files = ["AGENTS.md"] # Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable
+repo_context_from_default_branch = true # Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.
+repo_context_max_lines = 500 # Maximum total rendered lines for repo context, including wrapper tags
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500
@@ -61,7 +65,14 @@ ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
+# Substring indicators used to skip bot users on webhook events. Currently consumed by
+# the GitLab webhook (`is_bot_user`); other providers may adopt this list in future.
+# The match is case-insensitive against the sender's display name. Overriding this
+# setting REPLACES the default list — include the entries below in your override if
+# you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`).
+bot_user_indicators = ["codium", "bot_", "bot-", "_bot", "-bot"]
 #
+restricted_mode = false # when true, skip operations that require elevated permissions (e.g. pushing code to the repository)
 is_auto_command = false # will be auto-set to true if the command is triggered by an automation
 enable_ai_metadata = false # will enable adding ai metadata
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh"
@@ -69,6 +80,10 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
 extended_thinking_max_output_tokens = 4096
+# Optional: override the built-in list of Claude models that receive the extended-thinking payload.
+# When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
+# in pr_agent/algo/__init__.py). Leave empty to use the defaults.
+claude_extended_thinking_models_override = []
 # Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
 # issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
 # Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
@@ -149,6 +164,7 @@ async_ai_calls=true
 [pr_questions] # /ask #
 enable_help_text=false
 use_conversation_history=true
+extra_instructions = ""
 
 
 [pr_code_suggestions] # /improve #
@@ -247,12 +263,17 @@ publish_inline_comments_fallback_with_verification = true
 try_fix_invalid_inline_comments = true
 app_name = "pr-agent"
 ignore_bot_pr = true
+publish_as_check_run = false # when true, publish review/description/improve output as GitHub Checks instead of PR comments
 
 [github_action_config]
 # auto_review = true    # set as env var in .github/workflows/pr-agent.yaml
 # auto_describe = true  # set as env var in .github/workflows/pr-agent.yaml
 # auto_improve = true   # set as env var in .github/workflows/pr-agent.yaml
 # pr_actions = ['opened', 'reopened', 'ready_for_review', 'review_requested']
+# handle_push_trigger = false  # when true, handle synchronize events using push_commands (falls back to github_app.handle_push_trigger)
+# push_trigger_ignore_bot_commits = true
+# push_trigger_ignore_merge_commits = true
+# push_commands = ['/describe', '/review']  # defaults mirror github_app.push_commands
 
 [github_app]
 # these toggles allows running the github app from custom deployments
@@ -348,6 +369,19 @@ failure_callback = []
 service_callback = []
 # model_id = "" # Optional: Custom inference profile ID for Amazon Bedrock
 
+[openrouter]
+# OpenRouter provider routing, reasoning control and output cap. These apply only
+# to models addressed as "openrouter/...". The API key and api_base live in
+# .secrets.toml (or the openrouter__key env var); the keys below are non-secret.
+# Refs: https://openrouter.ai/docs/features/provider-routing
+#       https://openrouter.ai/docs/use-cases/reasoning-tokens
+provider_only = [] # restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing
+provider_order = [] # preferred provider order; ignored when provider_only is set; empty = unset
+allow_fallbacks = true # when provider_order is set, allow routing beyond the listed providers
+reasoning_effort = "" # "" leaves reasoning to the model default; "none" disables it; otherwise "low", "medium" or "high"
+reasoning_max_tokens = 0 # cap the reasoning budget in tokens; 0 = unset
+max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
+
 [pr_similar_issue]
 skip_comments = false
 force_update_dataset = false
@@ -375,6 +409,19 @@ uri = "./lancedb"
 # url = "https://YOUR-QDRANT-URL"
 # api_key = "..."
 
+[skills]
+# Agent skills (SKILL.md) support: discovers SKILL.md files from the configured
+# filesystem paths and injects their content into review/improve/describe prompts.
+# Sibling *.md files in the skill directory tree (e.g. references/guide.md) are
+# inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and
+# assets/ subdirectories are skipped because PR-Agent uses a single-shot model
+# call (no tool-use loop) and cannot execute scripts or load binary assets on
+# demand. Skills that depend on script execution will not work here.
+# See https://github.com/The-PR-Agent/pr-agent/issues/2384
+enabled = false
+paths = [] # directories to scan recursively for "*/SKILL.md"; supports ~ and $VAR
+max_skills_tokens = 8000 # token budget for the combined skills_context block
+
 [best_practices]
 content = ""
 organization_name = ""
@@ -387,6 +434,20 @@ utilize_auto_best_practices = true # public - disable usage of auto best practic
 extra_instructions = "" # public - extra instructions to the auto best practices generation prompt
 content = ""
 max_patterns = 5 # max number of patterns to be detected
+
+[artifacts]
+# Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)
+enable = false
+# File path to the artifact (relative to GITHUB_WORKSPACE, or absolute)
+artifact_path = ""
+# Custom instructions appended after the artifact content (leave empty for a sensible default)
+artifact_instructions = ""
+# Label shown to the AI — defaults to the filename when empty
+artifact_label = ""
+# Which tools receive artifact context
+target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
+# Max artifact size in characters (content is truncated if exceeded)
+max_artifact_size = 50000
 
 [azure_devops]
 default_comment_status = "closed"
