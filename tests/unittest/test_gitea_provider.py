@@ -149,6 +149,49 @@ class TestGiteaProvider:
         repo_api.get_pr_commits.assert_called_once_with(owner='owner', repo='repo', pr_number=7)
         repo_api.list_all_commits.assert_not_called()
 
+    def test_empty_comments_and_labels_are_valid_results(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 1
+        provider.issue_number = None
+        provider.enabled_issue = False
+        provider.pr = MagicMock(labels=[])
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.list_all_comments.return_value = []
+        provider.repo_api.get_issue_labels.return_value = []
+
+        assert provider.get_issue_comments() == []
+        assert provider.get_pr_labels() == []
+        assert provider.get_pr_labels(update=True) == []
+        provider.logger.error.assert_not_called()
+
+    def test_publish_code_suggestions_returns_true_without_duplicate_retry(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = {
+            "body": "Suggestion body",
+            "relevant_file": "file.py",
+            "relevant_lines_start": 3,
+            "original_suggestion": {"suggestion_content": "Improve this"},
+        }
+
+        assert provider.publish_code_suggestions([suggestion]) is True
+        provider.publish_inline_comments.assert_called_once()
+
+    def test_publish_code_suggestions_returns_false_on_publish_failure(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.publish_inline_comments = MagicMock(return_value=False)
+
+        assert provider.publish_code_suggestions([{
+            "body": "Suggestion body",
+            "relevant_file": "file.py",
+            "relevant_lines_start": 3,
+        }]) is False
+
     @pytest.mark.parametrize(
         ("url", "expected"),
         [

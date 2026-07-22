@@ -318,40 +318,58 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> None:
-        response = self.repo_api.create_inline_comment(
-            owner=self.owner,
-            repo=self.repo,
-            pr_number=self.pr_number if self.enabled_pr else self.issue_number,
-            body=body,
-            commit_id=self.sha or "",
-            comments=comments
-        )
+    def publish_inline_comments(self, comments: List[Dict[str, Any]], body: str = "Inline comment") -> bool:
+        try:
+            response = self.repo_api.create_inline_comment(
+                owner=self.owner,
+                repo=self.repo,
+                pr_number=self.pr_number if self.enabled_pr else self.issue_number,
+                body=body,
+                commit_id=self.sha or "",
+                comments=comments
+            )
+        except ApiException as e:
+            self.logger.warning(f"Failed to publish inline comment: {e}")
+            return False
 
         if not response:
-            self.logger.error("Failed to publish inline comment")
-            return
+            self.logger.warning("Failed to publish inline comment")
+            return False
 
         self.logger.info("Inline comment published")
+        return True
 
-    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]):
-        """Publish code suggestions"""
+    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
+        """Publish code suggestions and report whether every valid suggestion succeeded."""
+        if not suggestions:
+            return True
+
+        success = True
+        published = 0
         for suggestion in suggestions:
-            body = suggestion.get("body","")
+            body = suggestion.get("body", "")
             if not body:
                 self.logger.error("No body provided for the suggestion")
+                success = False
                 continue
 
-            path = suggestion.get("relevant_file","")
-            new_position = suggestion.get("relevant_lines_start",0)
-            old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
-            title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
-            payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
+            path = suggestion.get("relevant_file", "")
+            new_position = suggestion.get("relevant_lines_start", 0)
+            old_position = (suggestion.get("relevant_lines_start", 0)
+                            if "original_suggestion" not in suggestion
+                            else suggestion["original_suggestion"].get("relevant_lines_start", 0))
+            title_body = (suggestion["original_suggestion"].get("suggestion_content", "")
+                          if "original_suggestion" in suggestion else "")
+            payload = dict(body=body, path=path, old_position=old_position, new_position=new_position)
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
-                self.publish_inline_comments([payload],title_body)
+                suggestion_published = self.publish_inline_comments([payload], title_body)
             else:
-                self.publish_inline_comments([payload])
+                suggestion_published = self.publish_inline_comments([payload])
+            published += int(suggestion_published)
+            success = suggestion_published and success
+
+        return success and published == len(suggestions)
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         """Add eyes reaction to a comment"""
@@ -560,11 +578,7 @@ class GiteaProvider(GitProvider):
             repo=self.repo,
             index=index
         )
-        if not comments:
-            self.logger.error("Failed to get comments")
-            return []
-
-        return comments
+        return comments or []
 
     def get_languages(self) -> Set[str]:
         """Get programming languages used in the repository"""
@@ -598,21 +612,14 @@ class GiteaProvider(GitProvider):
     def get_pr_labels(self,update=False) -> List[str]:
         """Get labels assigned to the PR"""
         if not update:
-            if not self.pr.labels:
-                self.logger.error("Failed to get PR labels")
-                return []
-            return [label.name for label in self.pr.labels]
+            return [label.name for label in (self.pr.labels or [])]
 
         labels = self.repo_api.get_issue_labels(
             owner=self.owner,
             repo=self.repo,
             issue_number=self.pr_number
         )
-        if not labels:
-            self.logger.error("Failed to get PR labels")
-            return []
-
-        return [label.name for label in labels]
+        return [label.name for label in (labels or [])]
 
     def get_repo_settings(self) -> bytes:
         """Get repository settings"""
