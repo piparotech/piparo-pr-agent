@@ -21,12 +21,43 @@ from pr_agent.servers.utils import verify_signature
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
 
+
+def _configured_values(path: str) -> set[str]:
+    value = get_settings().get(path, [])
+    if isinstance(value, str):
+        value = value.split(",")
+    return {str(item).strip().lower() for item in value if str(item).strip()}
+
+
+def _repository_owner(body: Dict[str, Any]) -> str:
+    repo = body.get("repository", {}).get("full_name", "")
+    return repo.split("/", 1)[0].lower() if isinstance(repo, str) and "/" in repo else ""
+
+
+def _is_bot_sender(body: Dict[str, Any]) -> bool:
+    sender = str(body.get("sender", {}).get("login", "")).lower()
+    bot_user = str(get_settings().get("GITEA.BOT_USER", "")).strip().lower()
+    return bool(bot_user and sender == bot_user)
+
+
+@router.get("/")
+@router.get("/healthz")
+async def health():
+    return {"status": "ok"}
+
+
 @router.post("/api/v1/gitea_webhooks")
 async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Request, response: Response):
     """Handle incoming Gitea webhook requests"""
     get_logger().debug("Received a Gitea webhook")
 
     body = await get_body(request)
+
+    allowed_owners = _configured_values("GITEA.ALLOWED_OWNERS")
+    owner = _repository_owner(body)
+    if allowed_owners and owner not in allowed_owners:
+        get_logger().warning("Blocked webhook for unapproved Gitea owner", owner=owner)
+        raise HTTPException(status_code=403, detail="Repository owner is not allowed")
 
     # Set context for the request
     context["settings"] = copy.deepcopy(global_settings)
@@ -37,7 +68,7 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
         run_async_function_in_thread,
         handle_request,
         body,
-        event=request.headers.get("X-Gitea-Event", None),
+        event=request.headers.get("X-Forgejo-Event") or request.headers.get("X-Gitea-Event"),
     )
     return {}
 
@@ -51,24 +82,28 @@ async def get_body(request: Request):
 
 
     # Verify webhook signature
-    webhook_secret = getattr(get_settings().gitea, 'webhook_secret', None)
-    if webhook_secret:
-        body_bytes = await request.body()
-        signature_header = request.headers.get('x-gitea-signature', None)
-        if not signature_header:
-            get_logger().error("Missing signature header")
-            raise HTTPException(status_code=400, detail="Missing signature header")
+    webhook_secret = get_settings().get("GITEA.WEBHOOK_SECRET", None)
+    if not webhook_secret:
+        get_logger().error("Gitea webhook secret is not configured")
+        raise HTTPException(status_code=503, detail="Webhook verification is not configured")
 
-        try:
-            verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
-        except Exception as ex:
-            get_logger().error(f"Invalid signature: {ex}")
-            raise HTTPException(status_code=401, detail="Invalid signature")
+    body_bytes = await request.body()
+    signature_header = request.headers.get("x-gitea-signature")
+    normalized_signature = f"sha256={signature_header}" if signature_header else None
+    try:
+        verify_signature(body_bytes, webhook_secret, normalized_signature)
+    except HTTPException as ex:
+        get_logger().warning("Invalid Gitea webhook signature")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature") from ex
 
     return body
 
 async def handle_request(body: Dict[str, Any], event: str):
     """Process Gitea webhook events"""
+    if _is_bot_sender(body):
+        get_logger().debug("Ignoring webhook sent by the configured Gitea bot")
+        return {}
+
     action = body.get("action")
     if not action:
         get_logger().debug("No action found in request body")
@@ -124,14 +159,14 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
         return
 
     comment_body = comment.get("body", "")
-    if not comment_body or not comment_body.startswith("/"):
+    if not comment_body or not comment_body.lstrip().startswith("/"):
         return
 
     pr_url = body.get("pull_request", {}).get("url")
     if not pr_url:
         return
 
-    await agent.handle_request(pr_url, comment_body)
+    await agent.handle_request(pr_url, comment_body.lstrip())
 
 async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
     apply_repo_settings(api_url)

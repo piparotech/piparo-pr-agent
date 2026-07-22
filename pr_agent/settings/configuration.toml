@@ -318,6 +318,8 @@ push_commands = [
 url = "https://gitea.com" # Public URL used for PR, file, commit, and clone links.
 api_url = "https://gitea.com" # Optional internal API origin; override for in-cluster Forgejo access.
 repo_setting = ".pr_agent.toml"
+bot_user = ""
+allowed_owners = []
 handle_push_trigger = false
 pr_commands = [
     "/describe",
