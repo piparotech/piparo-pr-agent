@@ -28,6 +28,7 @@ class GiteaProvider(GitProvider):
             raise ValueError("PR URL not provided.")
 
         self.base_url = get_settings().get("GITEA.URL", "https://gitea.com").rstrip("/")
+        self.api_url = get_settings().get("GITEA.API_URL", self.base_url).rstrip("/")
         self.pr_url = ""
         self.issue_url = ""
 
@@ -38,7 +39,7 @@ class GiteaProvider(GitProvider):
 
         self.repo_settings = get_settings().get("GITEA.REPO_SETTING", None)
         configuration = giteapy.Configuration()
-        configuration.host = "{}/api/v1".format(self.base_url)
+        configuration.host = f"{self.api_url}/api/v1"
         configuration.api_key['Authorization'] = f'token {self.gitea_access_token}'
 
         if get_settings().get("GITEA.SKIP_SSL_VERIFICATION", False):
@@ -87,16 +88,19 @@ class GiteaProvider(GitProvider):
             self.git_files = filter_ignored(self.git_files, platform="gitea")
 
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
-            self.__add_file_content()
-            self.__add_file_diff()
-            self.pr_commits = self.repo_api.list_all_commits(
-                owner=self.owner,
-                repo=self.repo
-            )
-            self.last_commit = self.pr_commits[-1]
-            self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
+            self.__add_file_content()
+            self.__add_file_diff()
+            self.pr_commits = self.repo_api.get_pr_commits(
+                owner=self.owner,
+                repo=self.repo,
+                pr_number=self.pr_number,
+            )
+            # Forgejo's PR head is authoritative. Using the repository-wide commit list here can
+            # select an unrelated commit from another branch and attach inline reviews to it.
+            self.last_commit = self.pr.head
+            self.last_commit_id = self.pr.head
         elif "issues" in url:
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
@@ -157,10 +161,10 @@ class GiteaProvider(GitProvider):
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(pr_url.replace("/api/v1", ""))
-
         path_parts = parsed_url.path.strip('/').split('/')
+        if path_parts[:3] == ['api', 'v1', 'repos']:
+            path_parts = path_parts[3:]
+
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
             raise ValueError("The provided URL does not appear to be a Gitea PR URL")
 
@@ -177,10 +181,10 @@ class GiteaProvider(GitProvider):
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
         parsed_url = urlparse(issue_url)
 
-        if parsed_url.path.startswith('/api/v1'):
-            parsed_url = urlparse(issue_url.replace("/api/v1", ""))
-
         path_parts = parsed_url.path.strip('/').split('/')
+        if path_parts[:3] == ['api', 'v1', 'repos']:
+            path_parts = path_parts[3:]
+
         if len(path_parts) < 4 or path_parts[2] != 'issues':
             raise ValueError("The provided URL does not appear to be a Gitea issue URL")
 
@@ -227,7 +231,9 @@ class GiteaProvider(GitProvider):
         return self.issue_url
 
     def get_latest_commit_url(self) -> str:
-        return self.last_commit.html_url
+        if not self.sha:
+            return ""
+        return f"{self.base_url}/{self.owner}/{self.repo}/commit/{self.sha}"
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url
@@ -318,7 +324,7 @@ class GiteaProvider(GitProvider):
             repo=self.repo,
             pr_number=self.pr_number if self.enabled_pr else self.issue_number,
             body=body,
-            commit_id=self.last_commit.sha if self.last_commit else "",
+            commit_id=self.sha or "",
             comments=comments
         )
 
@@ -440,7 +446,7 @@ class GiteaProvider(GitProvider):
         return self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.last_commit.sha,
+            commit_sha=self.sha,
             filepath=filename
         )
 
@@ -614,10 +620,15 @@ class GiteaProvider(GitProvider):
             self.logger.error("Repository settings not found")
             return b""
 
+        settings_ref = self.base_sha or self.base_ref
+        if not settings_ref:
+            self.logger.error("Repository settings ref not found")
+            return b""
+
         response = self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.sha,
+            commit_sha=settings_ref,
             filepath=self.repo_settings
         )
         if not response:

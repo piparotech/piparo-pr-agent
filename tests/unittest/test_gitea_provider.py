@@ -109,6 +109,85 @@ class TestGiteaProvider:
         assert args[0] == '/repos/owner/repo/pulls/123/commits'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
 
+    @patch('pr_agent.git_providers.gitea_provider.get_settings')
+    @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
+    def test_gitea_provider_uses_internal_api_url_and_pr_head(self, mock_api_client_cls, mock_get_settings):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: {
+            'GITEA.URL': 'https://gitea.example.com',
+            'GITEA.API_URL': 'http://gitea.internal',
+            'GITEA.PERSONAL_ACCESS_TOKEN': 'test-token',
+            'GITEA.REPO_SETTING': '.pr_agent.toml',
+            'GITEA.SKIP_SSL_VERIFICATION': False,
+            'GITEA.SSL_CA_CERT': None,
+        }.get(k, d)
+        mock_get_settings.return_value = settings
+
+        pull_request = MagicMock()
+        pull_request.head.sha = 'pr-head-sha'
+        pull_request.head.ref = 'feature'
+        pull_request.base.sha = 'base-sha'
+        pull_request.base.ref = 'main'
+        pull_request.labels = []
+
+        with patch('pr_agent.git_providers.gitea_provider.RepoApi') as repo_api_cls:
+            repo_api = repo_api_cls.return_value
+            repo_api.get_pull_request.return_value = pull_request
+            repo_api.get_change_file_pull_request.return_value = []
+            repo_api.get_pull_request_diff.return_value = ''
+            repo_api.get_pr_commits.return_value = [{'sha': 'older-pr-commit'}]
+
+            provider = GiteaProvider('https://gitea.example.com/api/v1/repos/owner/repo/pulls/7')
+
+        configuration = mock_api_client_cls.call_args.args[0]
+        assert configuration.host == 'http://gitea.internal/api/v1'
+        assert provider.base_url == 'https://gitea.example.com'
+        assert provider.sha == 'pr-head-sha'
+        assert provider.last_commit is pull_request.head
+        assert provider.last_commit_id is pull_request.head
+        assert provider.get_latest_commit_url() == 'https://gitea.example.com/owner/repo/commit/pr-head-sha'
+        repo_api.get_pr_commits.assert_called_once_with(owner='owner', repo='repo', pr_number=7)
+        repo_api.list_all_commits.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://gitea.example.com/owner/repo/pulls/7", ("owner", "repo", 7)),
+            ("https://gitea.example.com/api/v1/repos/owner/repo/pulls/7", ("owner", "repo", 7)),
+        ],
+    )
+    def test_parse_pr_url_supports_browser_and_api_urls(self, url, expected):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        assert provider._parse_pr_url(url) == expected
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://gitea.example.com/owner/repo/issues/9", ("owner", "repo", 9)),
+            ("https://gitea.example.com/api/v1/repos/owner/repo/issues/9", ("owner", "repo", 9)),
+        ],
+    )
+    def test_parse_issue_url_supports_browser_and_api_urls(self, url, expected):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        assert provider._parse_issue_url(url) == expected
+
+    def test_get_repo_settings_reads_trusted_base_ref(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = 'owner'
+        provider.repo = 'repo'
+        provider.sha = 'untrusted-head-sha'
+        provider.base_sha = 'trusted-base-sha'
+        provider.base_ref = 'main'
+        provider.repo_settings = '.pr_agent.toml'
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_file_content.return_value = '[pr_reviewer]\nnum_code_suggestions = 4\n'
+
+        provider.get_repo_settings()
+
+        provider.repo_api.get_file_content.assert_called_once_with(
+            owner='owner', repo='repo', commit_sha='trusted-base-sha', filepath='.pr_agent.toml'
+        )
 
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
     @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
@@ -218,7 +297,9 @@ class TestGiteaProvider:
         provider.logger = MagicMock()
         provider.owner = 'owner'
         provider.repo = 'repo'
-        provider.sha = 'sha1'
+        provider.sha = 'head-sha'
+        provider.base_sha = 'sha1'
+        provider.base_ref = 'main'
         provider.repo_settings = '.pr_agent.toml'
         provider.repo_api = MagicMock()
         provider.repo_api.get_file_content.return_value = toml  # API decodes to str
@@ -245,7 +326,9 @@ class TestGiteaProvider:
         empty.logger = MagicMock()
         empty.owner = 'owner'
         empty.repo = 'repo'
-        empty.sha = 'sha1'
+        empty.sha = 'head-sha'
+        empty.base_sha = 'sha1'
+        empty.base_ref = 'main'
         empty.repo_settings = '.pr_agent.toml'
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
