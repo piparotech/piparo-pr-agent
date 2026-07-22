@@ -1,8 +1,8 @@
 ## Run a Gitea webhook server
 
-1. In Gitea create a new user and give it "Reporter" role for the intended group or project.
+1. In Forgejo/Gitea create a dedicated non-admin bot user and grant it write collaborator access only to the repositories it should review.
 
-2. For the user from step 1. generate a `personal_access_token` with `api` access.
+2. For that user generate a `personal_access_token`. On Forgejo 16, `write:repository,write:issue` covers PR reads/description updates and issue-comment publishing without granting admin or user-management access.
 
 3. Generate a random secret for your app, and save it for later (`webhook_secret`). For example, you can use:
 
